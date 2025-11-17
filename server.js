@@ -1,91 +1,196 @@
-const express = require("express");
-const axios = require("axios");
-const crypto = require("crypto");
+const express = require('express');
+const cors = require('cors');
+const fetch = require('node-fetch');
+const crypto = require('crypto');
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-// ====================== CONFIG ======================
-const BASE = process.env.XTREAM_BASE;       // http://xtvip.net
-const USER = process.env.XTREAM_USERNAME;   // watch1235
-const PASS = process.env.XTREAM_PASSWORD;   // 742837399
+// ================= إعداد بيانات سيرفر IPTV (من ENV) =================
 
-// مدة صلاحية التوكن (ساعة)
-const TOKEN_EXP = 60 * 60 * 1000;
+const XTREAM_SERVER = (process.env.XTREAM_SERVER || '').replace(/\/$/, '');
+const XTREAM_USER   = process.env.XTREAM_USER || '';
+const XTREAM_PASS   = process.env.XTREAM_PASS || '';
 
-// حفظ التوكنات في الرام
-let tokens = {};
+// مدة صلاحية التوكن (ثواني) – افتراضي 10 دقائق
+const TOKEN_TTL_SECONDS = parseInt(process.env.TOKEN_TTL_SECONDS || '600', 10);
 
-// ====================== TOKEN SYSTEM ======================
-function generateToken() {
-  const token = Date.now() + "." + crypto.randomBytes(32).toString("hex");
-  const exp = Date.now() + TOKEN_EXP;
-  tokens[token] = exp;
-  return { token, exp };
+// تحذير لو البيانات مش متظبطة
+if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
+  console.error('⚠️ لازم تضبط متغيرات البيئة: XTREAM_SERVER / XTREAM_USER / XTREAM_PASS');
 }
 
-function checkToken(tk) {
-  if (!tk) return false;
-  if (!tokens[tk]) return false;
-  if (Date.now() > tokens[tk]) {
-    delete tokens[tk];
+app.use(cors());          // السماح للـ HTML يتصل بالسيرفر
+app.use(express.json());
+
+// لوج بسيط للطلبات
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// ================ تخزين التوكنات في الذاكرة ================
+
+const tokens = new Map();
+
+function createToken() {
+  const token = crypto.randomBytes(24).toString('hex');
+  const expiresAt = Date.now() + TOKEN_TTL_SECONDS * 1000;
+  tokens.set(token, expiresAt);
+  return { token, expiresAt };
+}
+
+function isTokenValid(token) {
+  if (!token) return false;
+  const exp = tokens.get(token);
+  if (!exp) return false;
+  if (Date.now() > exp) {
+    tokens.delete(token);
     return false;
   }
   return true;
 }
 
-// ====================== ROUTES ======================
+// ================ Endpoints بسيطة للفحص ================
 
-// الحصول على توكن جديد
-app.get("/api/token", (req, res) => {
-  const { token, exp } = generateToken();
-  res.json({ success: true, token, expiresAt: exp });
+app.get('/', (req, res) => {
+  res.json({ ok: true, message: 'IPTV backend running ✅' });
 });
 
-// ---------------- LIVE CATEGORIES ----------------
-app.get("/api/live/categories", async (req, res) => {
-  const token = req.query.token;
-  if (!checkToken(token)) return res.json({ success: false, error: "Invalid token" });
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+// ================ /token => يرجع توكن مؤقت ================
+
+app.get('/token', (req, res) => {
+  const { token, expiresAt } = createToken();
+  res.json({ token, expiresAt });
+});
+
+// ================ /api/xtream => Proxy لـ Xtream API ================
+
+app.get('/api/xtream', async (req, res) => {
+  const action = req.query.action;
+  if (!action) {
+    return res.status(400).json({ error: 'action query is required' });
+  }
+
+  const url =
+    `${XTREAM_SERVER}/player_api.php` +
+    `?username=${encodeURIComponent(XTREAM_USER)}` +
+    `&password=${encodeURIComponent(XTREAM_PASS)}` +
+    `&action=${encodeURIComponent(action)}`;
 
   try {
-    const url = `${BASE}/player_api.php?username=${USER}&password=${PASS}&action=get_live_categories`;
-    const { data } = await axios.get(url);
-    res.json({ success: true, data });
+    const r = await fetch(url);
+    const text = await r.text();
+
+    try {
+      const data = JSON.parse(text);
+      res.status(r.status).json(data);
+    } catch (e) {
+      // لو الرد مش JSON نظيف، نرجعه زي ما هو
+      res.status(r.status).send(text);
+    }
   } catch (err) {
-    res.json({ success: false, error: "live cat error" });
+    console.error('❌ Error in /api/xtream:', err.message);
+    res.status(500).json({ error: 'upstream-error' });
   }
 });
 
-// ---------------- LIVE CHANNELS ----------------
-app.get("/api/live/channels", async (req, res) => {
-  const token = req.query.token;
-  if (!checkToken(token)) return res.json({ success: false, error: "Invalid token" });
+// ================ /api/series-info => حلقات مسلسل ================
+
+app.get('/api/series-info', async (req, res) => {
+  const series_id = req.query.series_id;
+  if (!series_id) {
+    return res.status(400).json({ error: 'series_id query is required' });
+  }
+
+  const url =
+    `${XTREAM_SERVER}/player_api.php` +
+    `?username=${encodeURIComponent(XTREAM_USER)}` +
+    `&password=${encodeURIComponent(XTREAM_PASS)}` +
+    `&action=get_series_info` +
+    `&series_id=${encodeURIComponent(series_id)}`;
 
   try {
-    const url = `${BASE}/player_api.php?username=${USER}&password=${PASS}&action=get_live_streams`;
-    const { data } = await axios.get(url);
-    res.json({ success: true, data });
-  } catch {
-    res.json({ success: false, error: "live list error" });
+    const r = await fetch(url);
+    const text = await r.text();
+
+    try {
+      const data = JSON.parse(text);
+      res.status(r.status).json(data);
+    } catch (e) {
+      res.status(r.status).send(text);
+    }
+  } catch (err) {
+    console.error('❌ Error in /api/series-info:', err.message);
+    res.status(500).json({ error: 'upstream-error' });
   }
 });
 
-// ---------------- PLAY LIVE STREAM ----------------
-app.get("/api/live/play", async (req, res) => {
-  const token = req.query.token;
-  const id = req.query.id;
+// ================ /stream => Proxy للستريم نفسه ================
+// الكلاينت يبعت: /stream?type=vod&id=123&ext=mp4&token=...
 
-  if (!checkToken(token)) return res.json({ success: false, error: "Invalid token" });
-  if (!id) return res.json({ success: false, error: "missing stream id" });
+app.get('/stream', async (req, res) => {
+  const { token, type = 'vod', id, ext } = req.query;
 
-  const streamURL = `${BASE}/live/${USER}/${PASS}/${id}.m3u8`;
+  if (!id) {
+    return res.status(400).json({ error: 'id query is required' });
+  }
 
-  res.json({
-    success: true,
-    url: streamURL
-  });
+  if (!isTokenValid(token)) {
+    return res.status(403).json({ error: 'invalid-or-expired-token' });
+  }
+
+  const safeType = String(type || 'vod').toLowerCase();
+  const safeExt = (ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
+
+  let path;
+
+  if (safeType === 'series') {
+    // حلقات المسلسلات
+    path = `/series/${encodeURIComponent(XTREAM_USER)}/${encodeURIComponent(XTREAM_PASS)}/${encodeURIComponent(id)}.${safeExt}`;
+  } else if (safeType === 'live') {
+    // قنوات لايف (لو حبيت تستخدمها بعدين)
+    path = `/live/${encodeURIComponent(XTREAM_USER)}/${encodeURIComponent(XTREAM_PASS)}/${encodeURIComponent(id)}.m3u8`;
+  } else {
+    // أفلام (VOD)
+    path = `/movie/${encodeURIComponent(XTREAM_USER)}/${encodeURIComponent(XTREAM_PASS)}/${encodeURIComponent(id)}.${safeExt}`;
+  }
+
+  const url = `${XTREAM_SERVER}${path}`;
+  console.log('⏩ Streaming from:', url);
+
+  try {
+    const upstream = await fetch(url);
+
+    if (!upstream.ok) {
+      console.error('Upstream status:', upstream.status);
+      res.status(upstream.status);
+    }
+
+    // ننقل شوية هيدرات مهمة
+    const contentType = upstream.headers.get('content-type');
+    if (contentType) res.setHeader('Content-Type', contentType);
+
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    // نخلي CORS موجود برضه
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // نعمل Proxy للستريم
+    upstream.body.pipe(res);
+  } catch (err) {
+    console.error('❌ Error in /stream:', err.message);
+    res.status(500).json({ error: 'stream-error' });
+  }
 });
 
-// ====================== SERVER ======================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("SERVER RUNNING on " + PORT));
+// ================ تشغيل السيرفر ================
+
+app.listen(PORT, () => {
+  console.log('✅ Server listening on port', PORT);
+});
