@@ -1,13 +1,16 @@
 {
   "name": "iptv-backend",
   "version": "1.0.0",
-  "description": "IPTV Token Protected Xtream Proxy Backend",
+  "description": "Secure IPTV Backend Proxy",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.7.0",
+    "axios": "^1.7.7",
     "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=16"
   }
 }
