@@ -1,16 +1,14 @@
 {
   "name": "iptv-backend",
   "version": "1.0.0",
-  "description": "Secure IPTV Backend Proxy",
+  "description": "Simple IPTV proxy backend for Xtream",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.7.7",
-    "express": "^4.18.2"
-  },
-  "engines": {
-    "node": ">=16"
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7"
   }
 }
