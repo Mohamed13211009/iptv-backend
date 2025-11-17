@@ -1,38 +1,93 @@
 const express = require("express");
 const crypto = require("crypto");
-const app = express();
+const axios = require("axios");
 
+const app = express();
 app.use(express.json());
 
-// 🕒 مدة صلاحية التوكن (هنا 60 دقيقة = ساعة واحدة)
+// ================= إعدادات التوكن =================
+
+// مدة صلاحية التوكن (ساعة واحدة)
 const TOKEN_EXPIRY = 60 * 60 * 1000;
 
-// 📺 هنا بتحط قنواتك
-// غيّر الأمثلة دي وحط لينكات الـ m3u8 الحقيقية
-const CHANNELS = {
-  test1: {
-    name: "Test Channel 1",
-    url: "http://example.com/channel1.m3u8",
-  },
-  test2: {
-    name: "Test Channel 2",
-    url: "http://example.com/channel2.m3u8",
-  },
-  // زوّد قنوات كده:
-  // bein1: { name: "Bein Sports 1", url: "http://.....m3u8" },
-};
-
-// 🔐 توليد توكن
+// توليد توكن جديد
 function generateToken() {
   const token = crypto.randomBytes(16).toString("hex");
   const expiresAt = Date.now() + TOKEN_EXPIRY;
   return { token, expiresAt };
 }
 
-// "قاعدة بيانات" بسيطة في الرام
+// "قاعدة بيانات" بسيطة في الرام (مش قاعدة بيانات حقيقية)
 let tokens = {};
 
+// ================= إعدادات Xtream =================
+
+// عنوان السيرفر الأساسي (لو ما حطيناش Env هيستخدم xtvip.net)
+const XTREAM_BASE = process.env.XTREAM_BASE || "http://xtvip.net";
+
+// اسم المستخدم والباسورد (مينفعش نكتبهم في الكود عشان الريبو Public)
+const XTREAM_USERNAME = process.env.XTREAM_USERNAME;
+const XTREAM_PASSWORD = process.env.XTREAM_PASSWORD;
+
+// هنا هنتخزن القنوات بعد ما نسحبها من Xtream
+// الشكل هيبقى مثلاً: { "1234": { name: "Channel name", url: "http://...m3u8" } }
+let CHANNELS = {};
+
+// دالة تسحب القنوات (live streams) من Xtream تلقائيًا
+async function loadChannelsFromXtream() {
+  try {
+    if (!XTREAM_USERNAME || !XTREAM_PASSWORD) {
+      console.error("❌ XTREAM_USERNAME أو XTREAM_PASSWORD مش متضبوطة في Environment Variables");
+      return;
+    }
+
+    const apiUrl = `${XTREAM_BASE}/player_api.php?username=${XTREAM_USERNAME}&password=${XTREAM_PASSWORD}&action=get_live_streams`;
+
+    console.log("🔄 Fetching channels from:", apiUrl);
+
+    const response = await axios.get(apiUrl, { timeout: 15000 });
+    const data = response.data;
+
+    if (!Array.isArray(data)) {
+      console.error("❌ رد Xtream مش Array زي المتوقع");
+      return;
+    }
+
+    const map = {};
+
+    // كل قناة ليها stream_id و name
+    for (const ch of data) {
+      const id = String(ch.stream_id);
+      map[id] = {
+        name: ch.name || `Channel ${id}`,
+        // لينك التشغيل الحقيقي من Xtream:
+        url: `${XTREAM_BASE}/live/${XTREAM_USERNAME}/${XTREAM_PASSWORD}/${id}.m3u8`
+      };
+    }
+
+    CHANNELS = map;
+
+    console.log(`✅ Loaded ${Object.keys(CHANNELS).length} channels from Xtream`);
+  } catch (err) {
+    console.error("❌ Error loading channels from Xtream:", err.message);
+  }
+}
+
+// نحمّل القنوات أول ما السيرفر يشتغل
+loadChannelsFromXtream();
+
+// ونجدد القنوات كل 15 دقيقة
+setInterval(loadChannelsFromXtream, 15 * 60 * 1000);
+
 // ==================== APIs ====================
+
+// صفحة بسيطة للتجربة
+app.get("/", (req, res) => {
+  res.json({
+    message: "IPTV Backend is running ✅",
+    info: "Use /token then /playlist.m3u?token=... or /stream/:id?token=...",
+  });
+});
 
 // GET /token  → يرجّع توكن جديد
 app.get("/token", (req, res) => {
@@ -42,13 +97,17 @@ app.get("/token", (req, res) => {
   res.json({
     success: true,
     token,
-    expiresAt,
+    expiresAt
   });
 });
 
-// GET /channels → يرجّع قائمة القنوات (JSON) عادي لو حابب تشوفها
+// GET /channels → يرجّع قائمة القنوات (من Xtream بعد ما اتحملت)
 app.get("/channels", (req, res) => {
-  res.json({ success: true, channels: CHANNELS });
+  res.json({
+    success: true,
+    count: Object.keys(CHANNELS).length,
+    channels: CHANNELS
+  });
 });
 
 // GET /playlist.m3u?token=XXXXX
@@ -57,7 +116,6 @@ app.get("/playlist.m3u", (req, res) => {
   const token = req.query.token;
 
   if (!token) return res.status(400).send("Missing token");
-
   if (!tokens[token]) return res.status(403).send("Invalid token");
 
   if (Date.now() > tokens[token]) {
@@ -65,8 +123,11 @@ app.get("/playlist.m3u", (req, res) => {
     return res.status(403).send("Token expired");
   }
 
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  if (Object.keys(CHANNELS).length === 0) {
+    return res.status(500).send("Channels not loaded yet");
+  }
 
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
   let lines = ["#EXTM3U"];
 
   for (const [id, ch] of Object.entries(CHANNELS)) {
@@ -79,7 +140,7 @@ app.get("/playlist.m3u", (req, res) => {
 });
 
 // GET /stream/:id?token=XXXXX
-// يشغّل قناة واحدة عن طريق الـ id
+// يشغّل قناة واحدة عن طريق الـ id (Redirect للينك الأصلي من Xtream)
 app.get("/stream/:id", (req, res) => {
   const token = req.query.token;
   const id = req.params.id;
@@ -103,12 +164,13 @@ app.get("/stream/:id", (req, res) => {
     return res.status(404).send("Channel not found");
   }
 
-  // 🔁 Redirect مباشر لللينك الحقيقي للقناة
+  console.log("▶ Redirect channel:", id, "->", channel.url);
+
   return res.redirect(channel.url);
 });
 
 // تشغيل السيرفر على Railway
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log("🚀 Server running on port " + PORT);
 });
