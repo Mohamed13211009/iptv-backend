@@ -2,6 +2,9 @@ const express = require("express");
 const crypto = require("crypto");
 const app = express();
 
+// عشان يشتغل على Render / Railway
+const PORT = process.env.PORT || 3000;
+
 app.use(express.json());
 
 // مدة صلاحية التوكن 10 دقايق
@@ -30,16 +33,18 @@ app.get("/token", (req, res) => {
   });
 });
 
-// API لجلب رابط IPTV محمي
+// API لجلب رابط IPTV محمي (مؤقتًا بيرجع نفس الرابط اللي تبعته)
 app.get("/stream", (req, res) => {
   const token = req.query.token;
   const originalUrl = req.query.url;
 
-  if (!token || !originalUrl)
+  if (!token || !originalUrl) {
     return res.json({ success: false, error: "Missing parameters" });
+  }
 
-  if (!tokens[token])
+  if (!tokens[token]) {
     return res.json({ success: false, error: "Invalid token" });
+  }
 
   if (Date.now() > tokens[token]) {
     delete tokens[token];
@@ -53,6 +58,6 @@ app.get("/stream", (req, res) => {
 });
 
 // تشغيل السيرفر
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
 });
