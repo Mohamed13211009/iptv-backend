@@ -1,120 +1,124 @@
 const express = require("express");
-const crypto  = require("crypto");
-const app     = express();
+const crypto = require("crypto");
+const axios = require("axios");
 
+const app = express();
 app.use(express.json());
 
-// 🕒 مدة صلاحية التوكن (ساعة)
-const TOKEN_EXPIRY = 60 * 60 * 1000;
+// ============ إعدادات الحماية ============
+const TOKEN_EXPIRY = 60 * 1000; // 60 ثانية
+const IPTV_SERVER = "http://xtvip.net";
+const IPTV_USER = "watch1235";
+const IPTV_PASS = "742837399";
 
-// 🔐 بيانات سيرفر Xtream
-// الأفضل تحطهم كـ Environment Variables في Railway
-const XTREAM_BASE = process.env.XTREAM_BASE || "http://xtvip.net";
-const XTREAM_USER = process.env.XTREAM_USER || "watch1235";
-const XTREAM_PASS = process.env.XTREAM_PASS || "742837399";
-
-// "قاعدة بيانات" بسيطة للتوكنات في الرام
+// قاعدة بيانات صغيرة داخل الذاكرة
 let tokens = {};
 
-// توليد توكن جديد
+// ============= إنشاء توكن مؤقت ============
 function generateToken() {
-  const token     = crypto.randomBytes(16).toString("hex");
+  const token = crypto.randomBytes(16).toString("hex");
   const expiresAt = Date.now() + TOKEN_EXPIRY;
-  tokens[token]   = expiresAt;
   return { token, expiresAt };
 }
 
-// التحقق من التوكن
-function validateToken(token) {
-  if (!token) return { ok: false, reason: "Missing token" };
-  const expiresAt = tokens[token];
-  if (!expiresAt) return { ok: false, reason: "Invalid token" };
-
-  if (Date.now() > expiresAt) {
-    delete tokens[token];
-    return { ok: false, reason: "Token expired" };
-  }
-  return { ok: true, expiresAt };
-}
-
-// ميدل وير إلزام التوكن
-function requireToken(req, res, next) {
-  const token = req.query.token;
-  const check = validateToken(token);
-
-  if (!check.ok) {
-    return res.status(403).send(check.reason);
-  }
-
-  req.token = token;
-  next();
-}
-
-// بناء لينك Xtream حسب النوع
-function buildXtreamUrl(kind, id, ext) {
-  const base = XTREAM_BASE.replace(/\/$/, "");
-  const user = encodeURIComponent(XTREAM_USER);
-  const pass = encodeURIComponent(XTREAM_PASS);
-  const sid  = encodeURIComponent(id);
-
-  const cleanExt = ext && String(ext).trim()
-    ? String(ext).replace(/^\./, "")
-    : null;
-
-  if (kind === "live") {
-    const e = cleanExt || "m3u8";
-    return `${base}/live/${user}/${pass}/${sid}.${e}`;
-  }
-
-  if (kind === "series") {
-    const e = cleanExt || "mp4";
-    return `${base}/series/${user}/${pass}/${sid}.${e}`;
-  }
-
-  // VOD / Movies
-  const e = cleanExt || "mkv";
-  return `${base}/movie/${user}/${pass}/${sid}.${e}`;
-}
-
-// ==================== APIs ====================
-
-// GET /token → يرجّع توكن جديد
+// API : إنشاء توكن
 app.get("/token", (req, res) => {
   const { token, expiresAt } = generateToken();
+  tokens[token] = expiresAt;
   res.json({ success: true, token, expiresAt });
 });
 
-// 🔴 بث مباشر: GET /stream/live/:id?token=...&ext=m3u8
-app.get("/stream/live/:id", requireToken, (req, res) => {
-  const { id } = req.params;
-  const ext    = req.query.ext || "m3u8";
-  const url    = buildXtreamUrl("live", id, ext);
-  return res.redirect(url);
+// ============= التحقق من التوكن ============
+function checkToken(token) {
+  if (!token) return false;
+  if (!tokens[token]) return false;
+  if (Date.now() > tokens[token]) {
+    delete tokens[token];
+    return false;
+  }
+  return true;
+}
+
+// ============= جلب بيانات ال API من Xtream ============
+async function xtream(action) {
+  const url =
+    `${IPTV_SERVER}/player_api.php?username=${IPTV_USER}&password=${IPTV_PASS}` +
+    `&action=${action}`;
+
+  const res = await axios.get(url, { timeout: 10000 });
+  return res.data;
+}
+
+// ============= جلب قائمة الأفلام ============
+app.get("/api/movies", async (req, res) => {
+  const token = req.query.token;
+
+  if (!checkToken(token)) {
+    return res.status(403).json({ success: false, error: "Invalid token" });
+  }
+
+  try {
+    const data = await xtream("get_vod_streams");
+    res.json({ success: true, items: data });
+  } catch (e) {
+    res.json({ success: false, error: "Failed to fetch movies" });
+  }
 });
 
-// 🎬 أفلام (VOD): GET /stream/vod/:id?token=...&ext=mkv
-app.get("/stream/vod/:id", requireToken, (req, res) => {
-  const { id } = req.params;
-  const ext    = req.query.ext || req.query.container || "mkv";
-  const url    = buildXtreamUrl("vod", id, ext);
-  return res.redirect(url);
+// ============= جلب قائمة المسلسلات ============
+app.get("/api/series", async (req, res) => {
+  const token = req.query.token;
+
+  if (!checkToken(token)) {
+    return res.status(403).json({ success: false, error: "Invalid token" });
+  }
+
+  try {
+    const data = await xtream("get_series");
+    res.json({ success: true, items: data });
+  } catch (e) {
+    res.json({ success: false, error: "Failed to fetch series" });
+  }
 });
 
-// 📺 مسلسلات (حلقات): GET /stream/series/:id?token=...&ext=mp4
-app.get("/stream/series/:id", requireToken, (req, res) => {
-  const { id } = req.params;
-  const ext    = req.query.ext || "mp4";
-  const url    = buildXtreamUrl("series", id, ext);
-  return res.redirect(url);
+// ============= جلب قائمة البث المباشر ============
+app.get("/api/live", async (req, res) => {
+  const token = req.query.token;
+
+  if (!checkToken(token)) {
+    return res.status(403).json({ success: false, error: "Invalid token" });
+  }
+
+  try {
+    const data = await xtream("get_live_streams");
+    res.json({ success: true, items: data });
+  } catch (e) {
+    res.json({ success: false, error: "Failed to fetch live channels" });
+  }
 });
 
-// اختبار بسيط
-app.get("/", (req, res) => {
-  res.json({ ok: true, message: "IPTV backend running" });
+// ============= تشغيل قناة / فيلم / حلقة ============
+app.get("/stream/:type/:id", (req, res) => {
+  const token = req.query.token;
+  const { type, id } = req.params;
+
+  if (!checkToken(token)) {
+    return res.status(403).send("Invalid or expired token");
+  }
+
+  let xtreamType = "";
+
+  if (type === "movie") xtreamType = "movie";
+  else if (type === "series") xtreamType = "series";
+  else if (type === "live") xtreamType = "live";
+  else return res.status(400).send("Invalid type");
+
+  // الرابط الحقيقي — لن يراه المستخدم
+  const redirectUrl = `${IPTV_SERVER}/${xtreamType}/${IPTV_USER}/${IPTV_PASS}/${id}.mp4`;
+
+  return res.redirect(redirectUrl);
 });
 
-// تشغيل السيرفر على Railway
+// ============= تشغيل السيرفر ============
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
-});
+app.listen(PORT, () => console.log("IPTV Protected Backend is running on " + PORT));
