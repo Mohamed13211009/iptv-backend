@@ -1,276 +1,119 @@
 const express = require("express");
-const crypto = require("crypto");
-const axios = require("axios");
-const app = express();
+const crypto  = require("crypto");
+const app     = express();
 
 app.use(express.json());
 
-// ========== إعدادات التوكن ==========
-const TOKEN_EXPIRY = 60 * 60 * 1000; // ساعة
+// 🕒 مدة صلاحية التوكن (ساعة)
+const TOKEN_EXPIRY = 60 * 60 * 1000;
 
-// تخزين التوكنات في الرام (بسيط)
-const tokens = {};
-
-// توليد توكن جديد
-function generateToken() {
-  const token = crypto.randomBytes(16).toString("hex");
-  const expiresAt = Date.now() + TOKEN_EXPIRY;
-  tokens[token] = expiresAt;
-  return { token, expiresAt };
-}
-
-// التحقق من التوكن
-function verifyToken(token) {
-  if (!token || !tokens[token]) return false;
-  if (Date.now() > tokens[token]) {
-    delete tokens[token];
-    return false;
-  }
-  return true;
-}
-
-// ========== إعدادات سيرفر Xtream ==========
+// 🔐 بيانات سيرفر Xtream
+// الأفضل تحطهم كـ Environment Variables في Railway
 const XTREAM_BASE = process.env.XTREAM_BASE || "http://xtvip.net";
 const XTREAM_USER = process.env.XTREAM_USER || "watch1235";
 const XTREAM_PASS = process.env.XTREAM_PASS || "742837399";
 
-function xtreamBaseUrl() {
-  return XTREAM_BASE.replace(/\/$/, "");
+// "قاعدة بيانات" بسيطة للتوكنات في الرام
+let tokens = {};
+
+// توليد توكن جديد
+function generateToken() {
+  const token     = crypto.randomBytes(16).toString("hex");
+  const expiresAt = Date.now() + TOKEN_EXPIRY;
+  tokens[token]   = expiresAt;
+  return { token, expiresAt };
 }
 
-// يبني Path الخاص بالستريم حسب النوع
-function buildStreamPath(kind, id, extOverride) {
-  const base = xtreamBaseUrl();
-  const u = encodeURIComponent(XTREAM_USER);
-  const p = encodeURIComponent(XTREAM_PASS);
+// التحقق من التوكن
+function validateToken(token) {
+  if (!token) return { ok: false, reason: "Missing token" };
+  const expiresAt = tokens[token];
+  if (!expiresAt) return { ok: false, reason: "Invalid token" };
 
-  let ext = (extOverride || "").toLowerCase().replace(/^\./, "");
+  if (Date.now() > expiresAt) {
+    delete tokens[token];
+    return { ok: false, reason: "Token expired" };
+  }
+  return { ok: true, expiresAt };
+}
 
-  if (!ext) {
-    if (kind === "live") ext = "m3u8";
-    else ext = "mkv";
+// ميدل وير إلزام التوكن
+function requireToken(req, res, next) {
+  const token = req.query.token;
+  const check = validateToken(token);
+
+  if (!check.ok) {
+    return res.status(403).send(check.reason);
   }
 
+  req.token = token;
+  next();
+}
+
+// بناء لينك Xtream حسب النوع
+function buildXtreamUrl(kind, id, ext) {
+  const base = XTREAM_BASE.replace(/\/$/, "");
+  const user = encodeURIComponent(XTREAM_USER);
+  const pass = encodeURIComponent(XTREAM_PASS);
+  const sid  = encodeURIComponent(id);
+
+  const cleanExt = ext && String(ext).trim()
+    ? String(ext).replace(/^\./, "")
+    : null;
+
   if (kind === "live") {
-    return `${base}/live/${u}/${p}/${id}.${ext}`;
+    const e = cleanExt || "m3u8";
+    return `${base}/live/${user}/${pass}/${sid}.${e}`;
   }
 
   if (kind === "series") {
-    return `${base}/series/${u}/${p}/${id}.${ext}`;
+    const e = cleanExt || "mp4";
+    return `${base}/series/${user}/${pass}/${sid}.${e}`;
   }
 
-  // vod / movie
-  return `${base}/movie/${u}/${p}/${id}.${ext}`;
+  // VOD / Movies
+  const e = cleanExt || "mkv";
+  return `${base}/movie/${user}/${pass}/${sid}.${e}`;
 }
 
-// دالة عامة تنادي player_api من Xtream
-async function callXtreamAPI(action, extraParams = {}) {
-  const base = xtreamBaseUrl();
-  const params = {
-    username: XTREAM_USER,
-    password: XTREAM_PASS,
-    action,
-    ...extraParams,
-  };
-
-  const url = `${base}/player_api.php`;
-  const res = await axios.get(url, { params, timeout: 10000 });
-  return res.data;
-}
-
-// ========== Endpoints التوكن ==========
+// ==================== APIs ====================
 
 // GET /token → يرجّع توكن جديد
 app.get("/token", (req, res) => {
   const { token, expiresAt } = generateToken();
-  res.json({
-    success: true,
-    token,
-    expiresAt,
-  });
+  res.json({ success: true, token, expiresAt });
 });
 
-// ========== Endpoints XTREAM JSON (قنوات/أفلام/مسلسلات) ==========
-// كل دول محتاجين token علشان التطبيق ما يناديش Xtream مباشرة
-
-// GET /xtream/live?token=XXX
-app.get("/xtream/live", async (req, res) => {
-  const token = req.query.token;
-  if (!verifyToken(token)) {
-    return res.status(403).json({ success: false, error: "Invalid or expired token" });
-  }
-
-  try {
-    const data = await callXtreamAPI("get_live_streams");
-    res.json({ success: true, data });
-  } catch (e) {
-    console.error("xtream live error", e.message);
-    res.status(500).json({ success: false, error: "xtream live failed" });
-  }
-});
-
-// GET /xtream/vod?token=XXX
-app.get("/xtream/vod", async (req, res) => {
-  const token = req.query.token;
-  if (!verifyToken(token)) {
-    return res.status(403).json({ success: false, error: "Invalid or expired token" });
-  }
-
-  try {
-    const data = await callXtreamAPI("get_vod_streams");
-    res.json({ success: true, data });
-  } catch (e) {
-    console.error("xtream vod error", e.message);
-    res.status(500).json({ success: false, error: "xtream vod failed" });
-  }
-});
-
-// GET /xtream/series?token=XXX
-app.get("/xtream/series", async (req, res) => {
-  const token = req.query.token;
-  if (!verifyToken(token)) {
-    return res.status(403).json({ success: false, error: "Invalid or expired token" });
-  }
-
-  try {
-    const data = await callXtreamAPI("get_series");
-    res.json({ success: true, data });
-  } catch (e) {
-    console.error("xtream series error", e.message);
-    res.status(500).json({ success: false, error: "xtream series failed" });
-  }
-});
-
-// تقدر تزود Endpoints تانية للـ categories لو حبيت:
-// get_vod_categories, get_series_categories, get_live_categories
-
-// ========== Playlist M3U جاهزة لأي Player ==========
-// GET /playlist.m3u?token=XXX&kind=live|vod
-app.get("/playlist.m3u", async (req, res) => {
-  const { token, kind } = req.query;
-
-  if (!verifyToken(token)) {
-    return res.status(403).send("#EXTM3U\n# Token invalid or expired");
-  }
-
-  const type = (kind || "live").toLowerCase();
-  let action;
-  if (type === "live") action = "get_live_streams";
-  else if (type === "vod") action = "get_vod_streams";
-  else action = "get_live_streams";
-
-  try {
-    const data = await callXtreamAPI(action);
-    let list = [];
-
-    // نحاول نستخرج Array من الرد
-    let arr = [];
-    if (Array.isArray(data)) arr = data;
-    else if (data && typeof data === "object") {
-      for (const k of Object.keys(data)) {
-        if (Array.isArray(data[k])) {
-          arr = data[k];
-          break;
-        }
-      }
-    }
-
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-
-    list.push("#EXTM3U");
-    arr.forEach((item) => {
-      const name =
-        item.name ||
-        item.stream_display_name ||
-        item.title ||
-        item.channel ||
-        "No Name";
-
-      const id =
-        item.stream_id ||
-        item.series_id ||
-        item.movie_id ||
-        item.channel_id ||
-        item.epg_channel_id;
-
-      if (!id) return;
-
-      list.push(`#EXTINF:-1,${name}`);
-      list.push(`${baseUrl}/stream/${type}/${id}?token=${token}`);
-    });
-
-    res.setHeader("Content-Type", "audio/x-mpegurl");
-    res.send(list.join("\n"));
-  } catch (e) {
-    console.error("playlist error", e.message);
-    res.status(500).send("#EXTM3U\n# error building playlist");
-  }
-});
-
-// ========== Streaming Proxy (LIVE / VOD / SERIES) ==========
-// GET /stream/live/:id?token=XXX&ext=m3u8
-// GET /stream/vod/:id?token=XXX&ext=mkv
-// GET /stream/series/:id?token=XXX&ext=mkv
-
-async function proxyStream(kind, id, token, ext, res) {
-  if (!verifyToken(token)) {
-    return res.status(403).send("Invalid or expired token");
-  }
-
-  const upstreamUrl = buildStreamPath(kind, id, ext);
-
-  console.log("proxyStream ->", kind, id, "=>", upstreamUrl);
-
-  try {
-    const upstream = await axios({
-      method: "GET",
-      url: upstreamUrl,
-      responseType: "stream",
-      timeout: 15000,
-      validateStatus: () => true,
-    });
-
-    if (upstream.status >= 400) {
-      console.error("upstream status", upstream.status);
-      res.status(upstream.status).send("Upstream error");
-      return;
-    }
-
-    // مرر Content-Type لو موجود
-    const ct = upstream.headers["content-type"];
-    if (ct) {
-      res.setHeader("Content-Type", ct);
-    }
-
-    upstream.data.pipe(res);
-  } catch (e) {
-    console.error("proxyStream error", e.message);
-    res.status(500).send("Proxy stream error");
-  }
-}
-
-// LIVE
-app.get("/stream/live/:id", async (req, res) => {
+// 🔴 بث مباشر: GET /stream/live/:id?token=...&ext=m3u8
+app.get("/stream/live/:id", requireToken, (req, res) => {
   const { id } = req.params;
-  const { token, ext } = req.query;
-  proxyStream("live", id, token, ext, res);
+  const ext    = req.query.ext || "m3u8";
+  const url    = buildXtreamUrl("live", id, ext);
+  return res.redirect(url);
 });
 
-// VOD (أفلام)
-app.get("/stream/vod/:id", async (req, res) => {
+// 🎬 أفلام (VOD): GET /stream/vod/:id?token=...&ext=mkv
+app.get("/stream/vod/:id", requireToken, (req, res) => {
   const { id } = req.params;
-  const { token, ext } = req.query;
-  proxyStream("vod", id, token, ext, res);
+  const ext    = req.query.ext || req.query.container || "mkv";
+  const url    = buildXtreamUrl("vod", id, ext);
+  return res.redirect(url);
 });
 
-// SERIES (حلقات المسلسلات)
-app.get("/stream/series/:id", async (req, res) => {
+// 📺 مسلسلات (حلقات): GET /stream/series/:id?token=...&ext=mp4
+app.get("/stream/series/:id", requireToken, (req, res) => {
   const { id } = req.params;
-  const { token, ext } = req.query;
-  proxyStream("series", id, token, ext, res);
+  const ext    = req.query.ext || "mp4";
+  const url    = buildXtreamUrl("series", id, ext);
+  return res.redirect(url);
 });
 
-// ========== تشغيل السيرفر على Railway ==========
+// اختبار بسيط
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "IPTV backend running" });
+});
+
+// تشغيل السيرفر على Railway
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
