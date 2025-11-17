@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json());
 
 // مدة صلاحية التوكن (ساعة)
-const TOKEN_EXPIRY = 60 * 60 * 1000;
+const TOKEN_EXPIRY = 60 * 2 * 1000;
 
 // بيانات سيرفر Xtream (حطها في ENV أو سيب الديفولت لو انت نفس البيانات)
 const XTREAM_SERVER = process.env.XTREAM_SERVER || "http://xtvip.net";
