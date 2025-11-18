@@ -9,9 +9,9 @@
 //   XTREAM_USER
 //   XTREAM_PASS
 //   TOKEN_TTL_SECONDS (optional, default 600)
-//   PROXYCHECK_KEY    (required for VPN/proxy detection - if missing, server will block requests)
+//   PROXYCHECK_KEY    (required for VPN/proxy detection)
 //   PROXYCHECK_TTL_SECONDS (optional, default 300)
-//   PROXYCHECK_FAIL_OPEN    (optional, "true" to allow on proxy-check failure; default "false" -> fail-closed)
+//   PROXYCHECK_FAIL_OPEN    (optional, "true" to allow on proxy-check failure; default "false")
 //   PROXYCHECK_BLOCK_RISK   (optional, default 3)
 //   PORT (optional)
 
@@ -87,8 +87,6 @@ function getClientIp(req) {
 const proxyCache = new Map(); // Map<ip, { ok, info, expiresAt }>
 
 async function queryProxyCheck(ip) {
-  // call proxycheck.io v2 API
-  // docs: https://proxycheck.io/
   if (!PROXYCHECK_KEY) throw new Error('proxycheck key missing');
   const url = `https://proxycheck.io/v2/${encodeURIComponent(ip)}?key=${encodeURIComponent(PROXYCHECK_KEY)}&vpn=1&risk=1&asn=1`;
   const r = await fetch(url, { timeout: 10000 });
@@ -146,7 +144,6 @@ async function checkProxyMiddleware(req, res, next) {
       return next();
     }
 
-    // require PROXYCHECK_KEY: if missing we will block (fail-closed)
     if (!PROXYCHECK_KEY) {
       console.warn('PROXYCHECK_KEY missing - blocking request by fail-closed policy');
       return res.status(503).json({ error: 'proxycheck-unavailable', message: 'proxycheck key not configured' });
@@ -165,7 +162,6 @@ async function checkProxyMiddleware(req, res, next) {
     }
 
     if (!probe.ok) {
-      // save to cache (probeProxyIp already caches)
       return res.status(403).json({ error: 'proxy-or-vpn-blocked', reason: probe.info });
     }
 
