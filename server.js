@@ -1,16 +1,18 @@
 // server.js
-// IPTV proxy backend with Proxy/VPN detection middleware (proxycheck.io)
+// IPTV proxy backend with Proxy/VPN detection (fail-closed behavior)
 //
-// Requirements:
-//   npm i express cors node-fetch crypto
+// Requires:
+//   npm install express cors node-fetch crypto
 //
-// Environment variables:
-//   XTREAM_SERVER, XTREAM_USER, XTREAM_PASS
+// Environment variables to set:
+//   XTREAM_SERVER     (e.g. http://xtvip.net)
+//   XTREAM_USER
+//   XTREAM_PASS
 //   TOKEN_TTL_SECONDS (optional, default 600)
-//   PROXYCHECK_KEY (optional - if missing, proxy checks are skipped)
+//   PROXYCHECK_KEY    (required for VPN/proxy detection - if missing, server will block requests)
 //   PROXYCHECK_TTL_SECONDS (optional, default 300)
-//   PROXYCHECK_FAIL_OPEN (optional, default true) - if true, fail-open on proxy-check errors
-//   PROXYCHECK_BLOCK_RISK (optional, default 3)
+//   PROXYCHECK_FAIL_OPEN    (optional, "true" to allow on proxy-check failure; default "false" -> fail-closed)
+//   PROXYCHECK_BLOCK_RISK   (optional, default 3)
 //   PORT (optional)
 
 const express = require('express');
@@ -21,30 +23,34 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ================= config =================
 const XTREAM_SERVER = ((process.env.XTREAM_SERVER || process.env.XTREAM_BASE || '') + '').replace(/\/$/, '');
 const XTREAM_USER   = process.env.XTREAM_USER || '';
 const XTREAM_PASS   = process.env.XTREAM_PASS || '';
 const TOKEN_TTL_SECONDS = parseInt(process.env.TOKEN_TTL_SECONDS || '600', 10);
 
+// Proxycheck / VPN detection config
 const PROXYCHECK_KEY = process.env.PROXYCHECK_KEY || '';
 const PROXYCHECK_TTL_SECONDS = parseInt(process.env.PROXYCHECK_TTL_SECONDS || '300', 10);
-const PROXYCHECK_FAIL_OPEN = (process.env.PROXYCHECK_FAIL_OPEN || 'true') === 'true';
+const PROXYCHECK_FAIL_OPEN = (process.env.PROXYCHECK_FAIL_OPEN || 'false') === 'true'; // default: false -> fail-closed
 const PROXYCHECK_BLOCK_RISK = parseInt(process.env.PROXYCHECK_BLOCK_RISK || '3', 10);
 
 if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
   console.error('⚠️ WARNING: Missing XTREAM_SERVER/XTREAM_USER/XTREAM_PASS environment variables.');
 }
+if (!PROXYCHECK_KEY) {
+  console.error('⚠️ WARNING: PROXYCHECK_KEY is not set. Server is configured to fail-closed - VPN/proxy checks will block requests.');
+}
 
 app.use(cors());
 app.use(express.json());
 
+// simple request logging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - ip=${req.ip}`);
   next();
 });
 
-// =============== tokens in-memory ===============
+// ============ token store (in-memory, simple) ============
 const tokens = new Map();
 function createToken(ip) {
   const token = crypto.randomBytes(24).toString('hex');
@@ -60,94 +66,119 @@ function isTokenValid(token, ip) {
     tokens.delete(token);
     return false;
   }
-  // optional bind by IP:
+  // optional: bind token to IP
   // if (entry.ip && entry.ip !== ip) return false;
   return true;
 }
 
-// =============== Proxy/VPN detection middleware ===============
-const proxyCache = new Map();
-
-function getClientIp(req){
+// ============ util: get client IP ============
+function getClientIp(req) {
   const xf = req.headers['x-forwarded-for'];
-  if(xf && typeof xf === 'string') {
-    const ips = xf.split(',').map(s=>s.trim()).filter(Boolean);
-    if(ips.length) return ips[0];
+  if (xf && typeof xf === 'string') {
+    const ips = xf.split(',').map(s => s.trim()).filter(Boolean);
+    if (ips.length) return ips[0];
   }
   let ip = req.ip || (req.connection && req.connection.remoteAddress) || '';
-  if(ip && ip.startsWith('::ffff:')) ip = ip.split(':').pop();
+  if (ip && ip.startsWith('::ffff:')) ip = ip.split(':').pop();
   return ip;
 }
 
-async function queryProxyCheck(ip){
-  if(!PROXYCHECK_KEY) throw new Error('proxycheck key missing');
+// ============ ProxyCheck integration + cache ============
+const proxyCache = new Map(); // Map<ip, { ok, info, expiresAt }>
+
+async function queryProxyCheck(ip) {
+  // call proxycheck.io v2 API
+  // docs: https://proxycheck.io/
+  if (!PROXYCHECK_KEY) throw new Error('proxycheck key missing');
   const url = `https://proxycheck.io/v2/${encodeURIComponent(ip)}?key=${encodeURIComponent(PROXYCHECK_KEY)}&vpn=1&risk=1&asn=1`;
   const r = await fetch(url, { timeout: 10000 });
   const text = await r.text();
   try {
-    const j = JSON.parse(text);
-    return j;
+    return JSON.parse(text);
   } catch (e) {
     throw new Error('invalid-proxycheck-response');
   }
 }
 
-async function checkProxyMiddleware(req, res, next){
+async function probeProxyIp(ip) {
+  if (!ip) throw new Error('ip-not-determined');
+  const cached = proxyCache.get(ip);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { ok: cached.ok, info: cached.info, cached: true };
+  }
+
+  if (!PROXYCHECK_KEY) {
+    // Fail-closed policy: if no key, we consider probe failed (blocked)
+    return { ok: false, info: { error: 'proxycheck_key_missing' }, cached: false };
+  }
+
   try {
-    const ip = getClientIp(req);
-    if(!ip) return res.status(400).json({ error: 'ip-not-determined' });
-
-    const cached = proxyCache.get(ip);
-    if(cached && cached.expiresAt > Date.now()){
-      if(!cached.ok) {
-        return res.status(403).json({ error:'proxy-or-vpn-blocked', reason: cached.info });
-      } else {
-        req.proxyCheck = cached.info;
-        return next();
-      }
-    }
-
-    if(!PROXYCHECK_KEY){
-      console.warn('PROXYCHECK_KEY not set — skipping proxy check');
-      return next();
-    }
-
-    let result;
-    try {
-      result = await queryProxyCheck(ip);
-    } catch (err) {
-      console.error('Proxy check failed for', ip, err.message || err);
-      if(PROXYCHECK_FAIL_OPEN) return next();
-      return res.status(503).json({ error:'proxy-check-failed', message: err.message || String(err) });
-    }
-
-    // proxycheck response shape: { status: 'ok', '1.2.3.4': { proxy:'yes', vpn:'yes', risk:'3', ... } }
+    const result = await queryProxyCheck(ip);
     const info = result[ip] || result;
     const isProxy = info && (info.proxy === 'yes' || info.vpn === 'yes' || info.type === 'VPN' || info.type === 'Proxy');
-    const risk = info && info.risk ? parseInt(info.risk,10) : 0;
+    const risk = info && info.risk ? parseInt(info.risk, 10) : 0;
     const blocked = !!isProxy || (risk >= PROXYCHECK_BLOCK_RISK);
 
-    proxyCache.set(ip, {
-      ok: !blocked,
-      info,
-      expiresAt: Date.now() + PROXYCHECK_TTL_SECONDS*1000
-    });
-
-    if(blocked) {
-      console.warn(`Blocking IP ${ip} by proxycheck`, info);
-      return res.status(403).json({ error:'proxy-or-vpn-blocked', reason: info });
+    proxyCache.set(ip, { ok: !blocked, info, expiresAt: Date.now() + PROXYCHECK_TTL_SECONDS * 1000 });
+    return { ok: !blocked, info, cached: false };
+  } catch (err) {
+    console.error('probeProxyIp error for', ip, err && err.message ? err.message : err);
+    if (PROXYCHECK_FAIL_OPEN) {
+      // allow on external failure
+      return { ok: true, info: { error: 'proxycheck-failed', message: err && err.message }, cached: false };
     }
-
-    req.proxyCheck = info;
-    return next();
-  } catch (e) {
-    console.error('proxy middleware error', e && e.message ? e.message : e);
-    if(PROXYCHECK_FAIL_OPEN) return next();
-    return res.status(500).json({ error:'proxy-middleware-error', message: e.message || String(e) });
+    // fail-closed
+    return { ok: false, info: { error: 'proxycheck-failed', message: err && err.message }, cached: false };
   }
 }
 
-// =============== Browser-like fetch helper ===============
+// middleware to block on proxy/vpn
+async function checkProxyMiddleware(req, res, next) {
+  try {
+    const ip = getClientIp(req);
+    if (!ip) return res.status(400).json({ error: 'ip-not-determined' });
+
+    // cache check
+    const cached = proxyCache.get(ip);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (!cached.ok) return res.status(403).json({ error: 'proxy-or-vpn-blocked', reason: cached.info });
+      req.proxyCheck = cached.info;
+      return next();
+    }
+
+    // require PROXYCHECK_KEY: if missing we will block (fail-closed)
+    if (!PROXYCHECK_KEY) {
+      console.warn('PROXYCHECK_KEY missing - blocking request by fail-closed policy');
+      return res.status(503).json({ error: 'proxycheck-unavailable', message: 'proxycheck key not configured' });
+    }
+
+    let probe;
+    try {
+      probe = await probeProxyIp(ip);
+    } catch (err) {
+      console.error('Proxy middleware probe error', err && err.message ? err.message : err);
+      if (PROXYCHECK_FAIL_OPEN) {
+        return next();
+      } else {
+        return res.status(503).json({ error: 'proxy-check-failed', message: err && err.message });
+      }
+    }
+
+    if (!probe.ok) {
+      // save to cache (probeProxyIp already caches)
+      return res.status(403).json({ error: 'proxy-or-vpn-blocked', reason: probe.info });
+    }
+
+    req.proxyCheck = probe.info;
+    return next();
+  } catch (e) {
+    console.error('proxy middleware unexpected error', e && e.message ? e.message : e);
+    if (PROXYCHECK_FAIL_OPEN) return next();
+    return res.status(500).json({ error: 'proxy-middleware-error', message: e && e.message ? e.message : String(e) });
+  }
+}
+
+// ============ browser-like fetch helper ============
 function browserHeaders() {
   const origin = XTREAM_SERVER || '';
   return {
@@ -158,7 +189,6 @@ function browserHeaders() {
     'Accept-Language': 'en-US,en;q=0.9',
   };
 }
-
 async function fetchWithBrowserHeaders(url, options = {}) {
   const opts = {
     method: options.method || 'GET',
@@ -168,20 +198,39 @@ async function fetchWithBrowserHeaders(url, options = {}) {
   return await fetch(url, opts);
 }
 
-// =============== Endpoints ===============
+// ============ Endpoints ============
 
-// Root
+// root & health
 app.get('/', (req, res) => res.json({ ok: true, message: 'IPTV backend running ✅' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Token generation - protected by proxy check
+// token (protected by proxy check)
 app.get('/token', checkProxyMiddleware, (req, res) => {
   const ip = getClientIp(req) || req.ip;
   const { token, expiresAt } = createToken(ip);
   res.json({ token, expiresAt });
 });
 
-// Proxy Xtream API - optionally protected (you can enable if desired)
+// /check-vpn : returns blocked:true/false (uses same probe logic, intended for client UI)
+app.get('/check-vpn', async (req, res) => {
+  try {
+    const ip = getClientIp(req) || req.ip;
+    const result = await probeProxyIp(ip);
+    // return a compact response
+    return res.json({
+      blocked: !result.ok,
+      reason: result.info && (result.info.proxy || result.info.vpn || result.info.type || result.info.error) || null,
+      detail: result.info,
+      cached: !!result.cached
+    });
+  } catch (err) {
+    console.error('/check-vpn error', err && err.message ? err.message : err);
+    if (PROXYCHECK_FAIL_OPEN) return res.json({ blocked: false, reason: 'probe-error', detail: null });
+    return res.status(500).json({ blocked: true, reason: 'probe-error', detail: (err && err.message) || String(err) });
+  }
+});
+
+// proxy Xtream API (optional protection; not required for UI check)
 app.get('/api/xtream', /* checkProxyMiddleware, */ async (req, res) => {
   try {
     const action = req.query.action;
@@ -201,7 +250,7 @@ app.get('/api/xtream', /* checkProxyMiddleware, */ async (req, res) => {
     const upstream = await fetchWithBrowserHeaders(url, { timeout: 15000 });
     console.log('Upstream status:', upstream.status);
 
-    const text = await upstream.text().catch(()=> '');
+    const text = await upstream.text().catch(() => '');
     console.log('Upstream sampleLength:', text ? text.length : 0);
 
     try {
@@ -216,7 +265,7 @@ app.get('/api/xtream', /* checkProxyMiddleware, */ async (req, res) => {
   }
 });
 
-// Series info
+// series info
 app.get('/api/series-info', /* checkProxyMiddleware, */ async (req, res) => {
   try {
     const series_id = req.query.series_id;
@@ -237,7 +286,7 @@ app.get('/api/series-info', /* checkProxyMiddleware, */ async (req, res) => {
     const upstream = await fetchWithBrowserHeaders(url, { timeout: 15000 });
     console.log('Upstream status:', upstream.status);
 
-    const text = await upstream.text().catch(()=> '');
+    const text = await upstream.text().catch(() => '');
     console.log('Upstream sampleLength:', text ? text.length : 0);
 
     try {
@@ -252,8 +301,8 @@ app.get('/api/series-info', /* checkProxyMiddleware, */ async (req, res) => {
   }
 });
 
-// Stream proxy - protected by proxy check
-app.get('/stream', checkProxyMiddleware, async (req,res) => {
+// stream proxy (protected by proxy check)
+app.get('/stream', checkProxyMiddleware, async (req, res) => {
   try {
     const { token, type = 'vod', id, ext = '' } = req.query;
     if (!id) return res.status(400).json({ error: 'id query is required' });
@@ -283,7 +332,7 @@ app.get('/stream', checkProxyMiddleware, async (req,res) => {
 
     if (!upstream.ok) {
       console.warn('Upstream status:', upstream.status);
-      const body = await upstream.text().catch(()=> '');
+      const body = await upstream.text().catch(() => '');
       return res.status(upstream.status).send(body);
     }
 
@@ -302,21 +351,11 @@ app.get('/stream', checkProxyMiddleware, async (req,res) => {
   }
 });
 
-// =========== Diagnostics (temporary) ===========
-app.get('/debug-env', (req, res) => {
-  res.json({
-    xtream_server_present: !!process.env.XTREAM_SERVER,
-    xtream_user_present: !!process.env.XTREAM_USER,
-    xtream_pass_present: !!process.env.XTREAM_PASS,
-    proxycheck_key_present: !!process.env.PROXYCHECK_KEY,
-    note: 'Reports presence only (true/false), not the secret values.'
-  });
-});
-
+// xtream-probe for diagnostics (returns upstream status & sample)
 app.get('/xtream-probe', async (req, res) => {
   try {
     if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
-      return res.status(500).json({ ok:false, error:'XTREAM env missing' });
+      return res.status(500).json({ ok: false, error: 'XTREAM env missing' });
     }
     const url =
       `${XTREAM_SERVER.replace(/\/$/,'')}/player_api.php` +
@@ -347,7 +386,17 @@ app.get('/xtream-probe', async (req, res) => {
   }
 });
 
-// =============== start server ===============
+// debug env presence
+app.get('/debug-env', (req, res) => {
+  res.json({
+    xtream_server_present: !!process.env.XTREAM_SERVER,
+    xtream_user_present: !!process.env.XTREAM_USER,
+    xtream_pass_present: !!process.env.XTREAM_PASS,
+    proxycheck_key_present: !!process.env.PROXYCHECK_KEY,
+    note: 'Reports presence only (true/false), not secret values.'
+  });
+});
+
 app.listen(PORT, () => {
   console.log('✅ Server listening on port', PORT);
 });
