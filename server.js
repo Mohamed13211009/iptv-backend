@@ -1,16 +1,4 @@
 // server.js
-// IPTV proxy backend for Xtream (Node.js + Express)
-// -----------------------------------------------
-// متطلبات تشغيل:
-//   npm i express cors node-fetch crypto
-//
-// متغيرات البيئة (Environment variables):
-//   XTREAM_SERVER   => http://xtvip.net    (أو عنوان سيرفرك الحقيقي)
-//   XTREAM_USER     => اسم المستخدم
-//   XTREAM_PASS     => كلمة المرور
-//   TOKEN_TTL_SECONDS => مدة صلاحية التوكن بالثواني (اختياري، default=600)
-//   PORT (اختياري)
-
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); // v2
@@ -19,39 +7,31 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// قراءة متغيرات البيئة
-const XTREAM_SERVER = (process.env.XTREAM_SERVER || '').replace(/\/$/, '');
+const XTREAM_SERVER = ((process.env.XTREAM_SERVER || process.env.XTREAM_BASE || '') + '').replace(/\/$/, '');
 const XTREAM_USER   = process.env.XTREAM_USER || '';
 const XTREAM_PASS   = process.env.XTREAM_PASS || '';
 const TOKEN_TTL_SECONDS = parseInt(process.env.TOKEN_TTL_SECONDS || '600', 10);
 
-// تحذير لو المتغيرات ناقصة
 if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
   console.error('⚠️ WARNING: Missing XTREAM_SERVER/XTREAM_USER/XTREAM_PASS environment variables.');
-  console.error('Set them in your Railway (or environment) and redeploy.');
 }
 
 app.use(cors());
 app.use(express.json());
 
-// لوج بسيط لكل request
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - ip=${req.ip}`);
   next();
 });
 
-// ===== تخزين التوكنات في الذاكرة (بسيط) =====
-// يمكن لاحقا استبداله بقاعدة بيانات أو تخزين موزع
-// tokens: Map<token, { expiresAt: number, ip?: string }>
+// tokens in-memory
 const tokens = new Map();
-
 function createToken(ip) {
   const token = crypto.randomBytes(24).toString('hex');
   const expiresAt = Date.now() + TOKEN_TTL_SECONDS * 1000;
   tokens.set(token, { expiresAt, ip, createdAt: Date.now() });
   return { token, expiresAt };
 }
-
 function isTokenValid(token, ip) {
   if (!token) return false;
   const entry = tokens.get(token);
@@ -60,35 +40,50 @@ function isTokenValid(token, ip) {
     tokens.delete(token);
     return false;
   }
-  // لو حابب تربط بالتوكين بالـ IP، افعل هذا الشرط:
+  // optional bind by IP:
   // if (entry.ip && entry.ip !== ip) return false;
   return true;
 }
 
-// ===== Endpoints =====
+// common headers to mimic browser
+function browserHeaders() {
+  const origin = XTREAM_SERVER || '';
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': origin,
+    'Origin': origin,
+    // sometimes helpful:
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+}
 
-// Root
-app.get('/', (req, res) => {
-  res.json({ ok: true, message: 'IPTV backend running ✅' });
-});
+// helper fetch wrapper with headers + timeout
+async function fetchWithBrowserHeaders(url, options = {}) {
+  const opts = {
+    method: options.method || 'GET',
+    headers: Object.assign({}, browserHeaders(), options.headers || {}),
+    timeout: options.timeout || 15000
+  };
+  return await fetch(url, opts);
+}
 
-// Health
+// Root & health
+app.get('/', (req, res) => res.json({ ok: true, message: 'IPTV backend running ✅' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Token generation
+// token
 app.get('/token', (req, res) => {
-  // ممكن تضيف تحقق (مثلاً user auth) لو عندك نظام دخول
   const ip = req.ip;
   const { token, expiresAt } = createToken(ip);
   res.json({ token, expiresAt });
 });
 
-// Proxy لـ Xtream API (get_vod_streams, get_series, get_vod_categories, ...)
+// Proxy Xtream API
 app.get('/api/xtream', async (req, res) => {
   try {
     const action = req.query.action;
     if (!action) return res.status(400).json({ error: 'action query is required' });
-
     if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
       return res.status(500).json({ error: 'XTREAM credentials not configured on server' });
     }
@@ -99,17 +94,18 @@ app.get('/api/xtream', async (req, res) => {
       `&password=${encodeURIComponent(XTREAM_PASS)}` +
       `&action=${encodeURIComponent(action)}`;
 
-    console.log(`⏩ Proxying Xtream API: ${url}`);
+    console.log('⏩ Proxying Xtream API:', url);
 
-    const upstream = await fetch(url, { timeout: 15000 }); // 15s timeout
-    const text = await upstream.text();
+    const upstream = await fetchWithBrowserHeaders(url, { timeout: 15000 });
+    console.log('Upstream status:', upstream.status);
 
-    // حاول نحول للـ JSON لو كان JSON
+    const text = await upstream.text().catch(()=> '');
+    console.log('Upstream sampleLength:', text ? text.length : 0);
+
     try {
       const json = JSON.parse(text);
       return res.status(upstream.status).json(json);
     } catch (e) {
-      // لو مش JSON نرجع النص كما هو
       return res.status(upstream.status).send(text);
     }
   } catch (err) {
@@ -118,12 +114,11 @@ app.get('/api/xtream', async (req, res) => {
   }
 });
 
-// Series info
+// series-info
 app.get('/api/series-info', async (req, res) => {
   try {
     const series_id = req.query.series_id;
     if (!series_id) return res.status(400).json({ error: 'series_id query is required' });
-
     if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
       return res.status(500).json({ error: 'XTREAM credentials not configured on server' });
     }
@@ -135,10 +130,13 @@ app.get('/api/series-info', async (req, res) => {
       `&action=get_series_info` +
       `&series_id=${encodeURIComponent(series_id)}`;
 
-    console.log(`⏩ Proxying Xtream series-info: ${url}`);
+    console.log('⏩ Proxying Xtream series-info:', url);
 
-    const upstream = await fetch(url, { timeout: 15000 });
-    const text = await upstream.text();
+    const upstream = await fetchWithBrowserHeaders(url, { timeout: 15000 });
+    console.log('Upstream status:', upstream.status);
+
+    const text = await upstream.text().catch(()=> '');
+    console.log('Upstream sampleLength:', text ? text.length : 0);
 
     try {
       const json = JSON.parse(text);
@@ -152,13 +150,12 @@ app.get('/api/series-info', async (req, res) => {
   }
 });
 
-// Stream proxy (client calls /stream?type=vod&id=123&ext=mp4&token=...)
+// stream proxy
 app.get('/stream', async (req,res) => {
   try {
     const { token, type = 'vod', id, ext = '' } = req.query;
     if (!id) return res.status(400).json({ error: 'id query is required' });
 
-    // تحقق من التوكن
     const ip = req.ip;
     if (!isTokenValid(token, ip)) {
       return res.status(403).json({ error: 'invalid-or-expired-token' });
@@ -179,27 +176,25 @@ app.get('/stream', async (req,res) => {
     const url = `${XTREAM_SERVER}${path}`;
     console.log(`⏩ Streaming proxy URL: ${url} (requested by ${ip})`);
 
-    // استعلام الـ upstream
-    const upstream = await fetch(url, { timeout: 20000 }); // 20s
+    // request with browser headers
+    const upstream = await fetchWithBrowserHeaders(url, { timeout: 20000 });
+    console.log('Upstream stream status:', upstream.status);
+
     if (!upstream.ok) {
       console.warn('Upstream status:', upstream.status);
-      return res.status(upstream.status).send(await upstream.text().catch(()=> ''));
+      const body = await upstream.text().catch(()=> '');
+      return res.status(upstream.status).send(body);
     }
 
-    // نقل الهيدرات المهمة
+    // pass through headers
     const contentType = upstream.headers.get('content-type');
     if (contentType) res.setHeader('Content-Type', contentType);
     const contentLength = upstream.headers.get('content-length');
     if (contentLength) res.setHeader('Content-Length', contentLength);
-
-    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // Pipe the stream
     const body = upstream.body;
-    if (!body) {
-      return res.status(500).json({ error: 'no-stream-body' });
-    }
+    if (!body) return res.status(500).json({ error: 'no-stream-body' });
     body.pipe(res);
   } catch (err) {
     console.error('❌ Error in /stream:', err && err.message ? err.message : String(err));
@@ -207,19 +202,16 @@ app.get('/stream', async (req,res) => {
   }
 });
 
-// =========== Diagnostics (مؤقت - احذفه بعد الفحص) ===========
-
-// Debug env presence (لا يعرض القيم السرية، يعرض اذا كانت موجودة)
+// diagnostics (temporary)
 app.get('/debug-env', (req, res) => {
   res.json({
     xtream_server_present: !!process.env.XTREAM_SERVER,
     xtream_user_present: !!process.env.XTREAM_USER,
     xtream_pass_present: !!process.env.XTREAM_PASS,
-    note: 'Reports presence only (true/false), not the secret values.'
+    note: 'Reports presence only (true/false).'
   });
 });
 
-// Probe directly to Xtream and return a sample of the response (مؤقت)
 app.get('/xtream-probe', async (req, res) => {
   try {
     if (!XTREAM_SERVER || !XTREAM_USER || !XTREAM_PASS) {
@@ -232,8 +224,9 @@ app.get('/xtream-probe', async (req, res) => {
       `&action=get_vod_streams`;
 
     console.log('🔎 xtream-probe ->', url);
-    const r = await fetch(url, { timeout: 15000 });
-    const status = r.status;
+    const r = await fetchWithBrowserHeaders(url, { timeout: 15000 });
+    console.log('Probe upstream status:', r.status);
+
     const headersObj = {};
     r.headers.forEach((v,k)=> headersObj[k] = v);
     const text = await r.text().catch(()=> '');
@@ -242,7 +235,7 @@ app.get('/xtream-probe', async (req, res) => {
     res.json({
       ok: true,
       probeUrl: url,
-      upstreamStatus: status,
+      upstreamStatus: r.status,
       upstreamHeaders: headersObj,
       sampleLength: text ? text.length : 0,
       sample: sample
@@ -253,7 +246,6 @@ app.get('/xtream-probe', async (req, res) => {
   }
 });
 
-// ================ Start server ================
 app.listen(PORT, () => {
   console.log('✅ Server listening on port', PORT);
 });
