@@ -1,5 +1,4 @@
 const express = require("express");
-const fetch = require("node-fetch"); // v2
 
 const app = express();
 
@@ -23,16 +22,19 @@ async function proxyStream(upstreamUrl, clientRes) {
   try {
     const upstreamRes = await fetch(upstreamUrl);
 
-    // نفس كود الحالة
     clientRes.status(upstreamRes.status);
 
-    // ننقل الهيدرز (ما عدا transfer-encoding)
     upstreamRes.headers.forEach((value, name) => {
       if (name.toLowerCase() === "transfer-encoding") return;
       clientRes.setHeader(name, value);
     });
 
-    // نعمل pipe للستريم للكلينت
+    if (!upstreamRes.body) {
+      const text = await upstreamRes.text();
+      clientRes.send(text);
+      return;
+    }
+
     upstreamRes.body.pipe(clientRes);
   } catch (err) {
     console.error("stream error:", err);
@@ -45,10 +47,6 @@ async function proxyStream(upstreamUrl, clientRes) {
 }
 
 // ====== API الرئيسي: player_api.php ======
-// الكود بتاعك بيطلب:
-// server/player_api.php?username=...&password=...&action=...
-// هنا هنستقبل الطلب، ونبعت نفس الـ action للسيرفر الحقيقي لكن
-// username/password من الـ env مش من اللي في الـ URL
 app.get("/player_api.php", async (req, res) => {
   if (!IPTV_BASE || !IPTV_USER || !IPTV_PASS) {
     return res.status(500).json({ error: "IPTV config missing" });
@@ -57,7 +55,6 @@ app.get("/player_api.php", async (req, res) => {
   try {
     const params = new URLSearchParams(req.query);
 
-    // نبدّل اليوزر والباس الحقيقيين
     params.set("username", IPTV_USER);
     params.set("password", IPTV_PASS);
 
@@ -65,10 +62,8 @@ app.get("/player_api.php", async (req, res) => {
       IPTV_BASE.replace(/\/$/, "") + "/player_api.php?" + params.toString();
 
     const upstreamRes = await fetch(upstreamUrl);
+    const text = await upstreamRes.text();
 
-    const text = await upstreamRes.text(); // السيرفر بيرجع JSON غالبًا
-
-    // ننقل نوع الكونتنت لو موجود
     const contentType = upstreamRes.headers.get("content-type");
     if (contentType) {
       res.setHeader("content-type", contentType);
@@ -84,10 +79,6 @@ app.get("/player_api.php", async (req, res) => {
 });
 
 // ====== مسارات تشغيل الفيديو ======
-// الكود بتاعك بيبني روابط زي:
-//  /movie/user/pass/ID.ext
-//  /series/user/pass/ID.ext
-//  /user/pass/ID
 
 // فيلم/VOD
 app.get("/movie/:fakeUser/:fakePass/:id.:ext", async (req, res) => {
