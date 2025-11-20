@@ -1,11 +1,13 @@
 {
   "name": "iptv-backend",
   "version": "1.0.0",
+  "description": "Simple IPTV proxy backend",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.0"
+    "express": "^4.19.2",
+    "node-fetch": "^2.6.12"
   }
 }
