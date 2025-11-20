@@ -1,8 +1,6 @@
-// index.js — IPTV backend مع دعم xtvip و Railway
+// index.js — IPTV backend آمن لبيئة Railway
 
 const express = require("express");
-const fetch = require("node-fetch"); // v2
-
 const app = express();
 
 // السماح للـ HTML بتاعك يطلب من الباك إند (CORS بسيط)
@@ -16,27 +14,43 @@ app.use((req, res, next) => {
 });
 
 // بيانات السيرفر من الـ env على Railway
-const IPTV_BASE = process.env.IPTV_BASE;       // مثال: https://xtvip.net
-const IPTV_USER = process.env.IPTV_USER;       // مثال: watch1235
-const IPTV_PASS = process.env.IPTV_PASS;       // مثال: 742837399
+const IPTV_BASE = process.env.IPTV_BASE; // مثال: https://xtvip.net
+const IPTV_USER = process.env.IPTV_USER; // مثال: watch1235
+const IPTV_PASS = process.env.IPTV_PASS; // مثال: 742837399
 
 if (!IPTV_BASE || !IPTV_USER || !IPTV_PASS) {
-  console.warn("⚠️ لازم تضيف IPTV_BASE, IPTV_USER, IPTV_PASS في Variables على Railway");
+  console.warn(
+    "⚠️ لازم تضيف IPTV_BASE, IPTV_USER, IPTV_PASS في Variables على Railway"
+  );
 }
 
-// هيدرز نخلي الطلب شبه المتصفح الحقيقي
+// دالة fetch آمنة (تستخدم global fetch لو متاح، أو node-fetch ديناميكيًا)
+async function httpFetch(url, options) {
+  if (typeof fetch === "function") {
+    // Node 18+ فيه fetch جاهز
+    return await fetch(url, options);
+  } else {
+    // لو النسخة أقدم، نستعمل node-fetch كموديول ESM
+    const mod = await import("node-fetch");
+    return mod.default(url, options);
+  }
+}
+
+// نفس الهيدرز اللي بيستخدمها المتصفح تقريبًا
 const COMMON_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Mobile Safari/537.36",
-  Referer: IPTV_BASE || "https://xtvip.net",
   Accept: "*/*",
   Connection: "keep-alive",
+  Referer: IPTV_BASE || "https://xtvip.net",
 };
 
 // دالة تساعدنا ننقل الهيدر ونستقبل الستريم
 async function proxyStream(upstreamUrl, clientRes) {
   try {
-    const upstreamRes = await fetch(upstreamUrl, { headers: COMMON_HEADERS });
+    const upstreamRes = await httpFetch(upstreamUrl, {
+      headers: COMMON_HEADERS,
+    });
 
     console.log(
       "[STREAM]",
@@ -50,6 +64,10 @@ async function proxyStream(upstreamUrl, clientRes) {
       if (name.toLowerCase() === "transfer-encoding") return;
       clientRes.setHeader(name, value);
     });
+
+    if (!upstreamRes.body) {
+      return clientRes.status(500).send("No stream body");
+    }
 
     upstreamRes.body.pipe(clientRes);
   } catch (err) {
@@ -69,7 +87,7 @@ app.get("/player_api.php", async (req, res) => {
   }
 
   try {
-    const params = new URLSearchParams(req.query);
+    const params = new URLSearchParams(req.query || {});
 
     // نبدّل اليوزر والباس من الـ env مهما كان اللي جاي من العميل
     params.set("username", IPTV_USER);
@@ -78,7 +96,9 @@ app.get("/player_api.php", async (req, res) => {
     const upstreamUrl =
       IPTV_BASE.replace(/\/$/, "") + "/player_api.php?" + params.toString();
 
-    const upstreamRes = await fetch(upstreamUrl, { headers: COMMON_HEADERS });
+    const upstreamRes = await httpFetch(upstreamUrl, {
+      headers: COMMON_HEADERS,
+    });
     const text = await upstreamRes.text();
 
     console.log(
@@ -94,7 +114,7 @@ app.get("/player_api.php", async (req, res) => {
       res.setHeader("content-type", "application/json; charset=utf-8");
     }
 
-    // نرجّع نفس كود الحالة (حتى لو 401 عشان نعرف السبب)
+    // نرجّع نفس كود الحالة (حتى لو 401)
     res.status(upstreamRes.status).send(text);
   } catch (err) {
     console.error("player_api error:", err);
