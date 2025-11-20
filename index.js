@@ -1,14 +1,21 @@
+// index.js — IPTV backend مع دعم xtvip و Railway
+
 const express = require("express");
+const fetch = require("node-fetch"); // v2
 
 const app = express();
 
-// السماح للـ HTML بتاعك يطلب من الباك إند
+// السماح للـ HTML بتاعك يطلب من الباك إند (CORS بسيط)
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept"
+  );
   next();
 });
 
-// بيانات السيرفر الحقيقية تيجي من الـ env (مش في الكود)
+// بيانات السيرفر من الـ env على Railway
 const IPTV_BASE = process.env.IPTV_BASE;       // مثال: https://xtvip.net
 const IPTV_USER = process.env.IPTV_USER;       // مثال: watch1235
 const IPTV_PASS = process.env.IPTV_PASS;       // مثال: 742837399
@@ -17,10 +24,25 @@ if (!IPTV_BASE || !IPTV_USER || !IPTV_PASS) {
   console.warn("⚠️ لازم تضيف IPTV_BASE, IPTV_USER, IPTV_PASS في Variables على Railway");
 }
 
+// هيدرز نخلي الطلب شبه المتصفح الحقيقي
+const COMMON_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Mobile Safari/537.36",
+  Referer: IPTV_BASE || "https://xtvip.net",
+  Accept: "*/*",
+  Connection: "keep-alive",
+};
+
 // دالة تساعدنا ننقل الهيدر ونستقبل الستريم
 async function proxyStream(upstreamUrl, clientRes) {
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: COMMON_HEADERS });
+
+    console.log(
+      "[STREAM]",
+      upstreamRes.status,
+      upstreamUrl.substring(0, 120)
+    );
 
     clientRes.status(upstreamRes.status);
 
@@ -28,12 +50,6 @@ async function proxyStream(upstreamUrl, clientRes) {
       if (name.toLowerCase() === "transfer-encoding") return;
       clientRes.setHeader(name, value);
     });
-
-    if (!upstreamRes.body) {
-      const text = await upstreamRes.text();
-      clientRes.send(text);
-      return;
-    }
 
     upstreamRes.body.pipe(clientRes);
   } catch (err) {
@@ -55,14 +71,21 @@ app.get("/player_api.php", async (req, res) => {
   try {
     const params = new URLSearchParams(req.query);
 
+    // نبدّل اليوزر والباس من الـ env مهما كان اللي جاي من العميل
     params.set("username", IPTV_USER);
     params.set("password", IPTV_PASS);
 
     const upstreamUrl =
       IPTV_BASE.replace(/\/$/, "") + "/player_api.php?" + params.toString();
 
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: COMMON_HEADERS });
     const text = await upstreamRes.text();
+
+    console.log(
+      "[API]",
+      upstreamRes.status,
+      upstreamUrl.substring(0, 160)
+    );
 
     const contentType = upstreamRes.headers.get("content-type");
     if (contentType) {
@@ -71,6 +94,7 @@ app.get("/player_api.php", async (req, res) => {
       res.setHeader("content-type", "application/json; charset=utf-8");
     }
 
+    // نرجّع نفس كود الحالة (حتى لو 401 عشان نعرف السبب)
     res.status(upstreamRes.status).send(text);
   } catch (err) {
     console.error("player_api error:", err);
@@ -135,7 +159,7 @@ app.get("/:fakeUser/:fakePass/:id", async (req, res) => {
 });
 
 // بورت Railway
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log("IPTV backend running on port", PORT);
 });
