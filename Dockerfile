@@ -1,8 +1,20 @@
+# Dockerfile backend للكشف عن الـ VPN باستخدام PHP
+
+# صورة PHP 8.2 CLI
 FROM php:8.2-cli
 
-# ننسخ ملفات المشروع كلها
+# تثبيت curl عشان نستخدمه جوه PHP
+RUN apt-get update && apt-get install -y \
+    libcurl4-openssl-dev \
+ && docker-php-ext-install curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# مجلد العمل
 WORKDIR /app
+
+# نسخ كل ملفات المشروع إلى /app
 COPY . /app
 
-# نشغّل سيرفر PHP على البورت 8080 (Railway بيطلب كده)
-CMD ["php", "-S", "0.0.0.0:8080", "vpn-check.php"]
+# نستخدم السيرفر المدمج بتاع PHP على البورت 8000
+EXPOSE 8000
+CMD ["php", "-S", "0.0.0.0:8000", "-t", "/app"]
