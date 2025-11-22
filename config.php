@@ -1,17 +1,15 @@
 <?php
-// =======================
-// إعدادات الـ IPTV
-// =======================
-define('IPTV_SERVER',   'https://xtvip.net');
-define('IPTV_USERNAME', 'watch1235');
-define('IPTV_PASSWORD', '742837399');
+// config.php  — يرجّع بيانات السيرفر للتطبيق
 
-// =======================
-// إعدادات كاش الـ VPN
-// =======================
-define('VPN_CACHE_FILE', __DIR__ . '/vpn_cache.json');
-// 6 ساعات كاش لكل IP
-define('VPN_CACHE_TTL', 6 * 60 * 60);
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *'); // لو محتاج تمنع، عدّلها
 
-// لو معاك توكن من ipwho.is حطه هنا (اختياري)
-// define('IPWHO_TOKEN', 'YOUR_TOKEN_HERE');
+$server = getenv('XTVIP_SERVER');
+$user   = getenv('XTVIP_USER');
+$pass   = getenv('XTVIP_PASS');
+
+echo json_encode([
+    'server' => $server,
+    'user'   => $user,
+    'pass'   => $pass,
+]);
