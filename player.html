@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>مشغل الأسطورة TV</title>
+<style>
+  :root{
+    --bg:#020617;
+    --bg2:#020617;
+    --muted:rgba(255,255,255,0.75);
+    --accent:#22d3ee;
+    --accent2:#a855f7;
+  }
+  *{box-sizing:border-box}
+  html,body{
+    margin:0;
+    padding:0;
+    height:100%;
+    background:#000;
+    color:#fff;
+    font-family:system-ui,Roboto,Arial;
+    direction:rtl;
+  }
+  body{
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* شريط علوي بسيط للرجوع + عنوان */
+  .top-bar{
+    position:fixed;
+    top:0;right:0;left:0;
+    height:46px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 10px;
+    background:linear-gradient(90deg,rgba(0,0,0,0.9),rgba(15,23,42,0.9));
+    z-index:20;
+    transition:opacity .25s ease;
+  }
+  .top-bar.hidden{
+    opacity:0;
+    pointer-events:none;
+  }
+  .top-left,
+  .top-right{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .btn-top{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding:6px 10px;
+    border-radius:999px;
+    border:1px solid rgba(148,163,184,0.9);
+    background:rgba(15,23,42,0.9);
+    color:#e5e7eb;
+    font-size:13px;
+    cursor:pointer;
+  }
+  .btn-top span.icon{
+    font-size:14px;
+  }
+  .title{
+    font-size:14px;
+    font-weight:700;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    max-width:200px;
+  }
+
+  /* منطقة المشغّل */
+  .player-wrap{
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#000;
+  }
+  video{
+    width:100%;
+    height:100%;
+    object-fit:contain; /* يملأ الشاشة من غير قطع */
+    background:#000;
+  }
+
+  /* لودينج */
+  .loader-overlay{
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:radial-gradient(circle at top,#020617 0,#000 70%);
+    z-index:15;
+  }
+  .loader{
+    width:42px;
+    height:42px;
+    border-radius:50%;
+    border:4px solid rgba(148,163,184,0.25);
+    border-top-color:var(--accent);
+    border-right-color:var(--accent2);
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin{
+    to{transform:rotate(360deg);}
+  }
+
+  /* رسالة خطأ */
+  .error-box{
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#000;
+    padding:20px;
+    text-align:center;
+  }
+  .error-inner{
+    max-width:320px;
+  }
+  .error-title{
+    font-size:18px;
+    margin-bottom:6px;
+    font-weight:800;
+  }
+  .error-text{
+    font-size:14px;
+    color:var(--muted);
+    margin-bottom:16px;
+  }
+  .error-btn{
+    padding:8px 18px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    border:none;
+    border-radius:999px;
+    font-size:14px;
+    cursor:pointer;
+    color:#0f172a;
+    font-weight:700;
+  }
+
+  @media (orientation:landscape){
+    .title{max-width:320px;}
+  }
+</style>
+</head>
+<body>
+
+<!-- شريط علوي -->
+<div class="top-bar" id="topBar">
+  <div class="top-left">
+    <button class="btn-top" id="backBtn">
+      <span class="icon">⬅️</span>
+      <span>رجوع</span>
+    </button>
+  </div>
+  <div class="top-right">
+    <div class="title" id="videoTitle">الأسطورة TV</div>
+  </div>
+</div>
+
+<!-- المشغّل -->
+<div class="player-wrap">
+  <video id="player" playsinline controls></video>
+</div>
+
+<!-- لودينج -->
+<div class="loader-overlay" id="loader">
+  <div class="loader"></div>
+</div>
+
+<!-- صندوق خطأ (يظهر عند الحاجة) -->
+<div class="error-box" id="errorBox" style="display:none;">
+  <div class="error-inner">
+    <div class="error-title">تعذر تشغيل الفيديو</div>
+    <div class="error-text" id="errorText">حدث خطأ أثناء تحميل الرابط.</div>
+    <button class="error-btn" onclick="location.reload()">إعادة المحاولة 🔁</button>
+  </div>
+</div>
+
+<script>
+/*
+  طريقة الاستخدام من التطبيق:
+
+  1) لو معاك لينك الفيديو مباشرة:
+     https://USERNAME.github.io/iptv-player/player.html?url=ENCODED_URL&title=اسم+الفيلم
+
+     مثــال:
+     url = encodeURIComponent('https://xtvip.net/live/...m3u8')
+
+  2) لو عايز تستخدم الباك إند:
+     استبدل البرامترات: ?id=123&type=vod
+     وعدّل الدالة loadPlaylistFromBackend تحت علشان تطلب من الباك إند.
+*/
+
+const player     = document.getElementById('player');
+const loaderEl   = document.getElementById('loader');
+const errorBox   = document.getElementById('errorBox');
+const errorText  = document.getElementById('errorText');
+const titleEl    = document.getElementById('videoTitle');
+const topBar     = document.getElementById('topBar');
+const backBtn    = document.getElementById('backBtn');
+
+let playlist = [];
+let currentIndex = 0;
+let uiTimeout = null;
+
+/* ====== قراءة البراميترز من الـ URL ====== */
+const params = new URLSearchParams(window.location.search);
+const directUrlParam = params.get('url');
+const titleParam     = params.get('title') || 'الأسطورة TV';
+const idParam        = params.get('id');
+const typeParam      = params.get('type') || 'vod';
+
+titleEl.textContent = decodeURIComponent(titleParam);
+
+/* رجوع */
+backBtn.addEventListener('click', () => {
+  // لو جاي من AppCreator 24 جوّه سكشن
+  if (document.referrer) {
+    history.back();
+  } else {
+    // في أسوأ الحالات: رجوع للأب
+    window.location.href = 'about:blank';
+  }
+});
+
+/* إظهار/إخفاء التوب بار تلقائي */
+function showUI(){
+  topBar.classList.remove('hidden');
+  if(uiTimeout) clearTimeout(uiTimeout);
+  uiTimeout = setTimeout(()=> {
+    if(!player.paused){
+      topBar.classList.add('hidden');
+    }
+  }, 2500);
+}
+player.addEventListener('play', showUI);
+player.addEventListener('pause', () => {
+  topBar.classList.remove('hidden');
+  if(uiTimeout) clearTimeout(uiTimeout);
+});
+player.addEventListener('click', showUI);
+document.addEventListener('touchstart', showUI);
+
+/* هاندل الخطأ */
+function fail(msg){
+  loaderEl.style.display = 'none';
+  errorBox.style.display = 'flex';
+  errorText.textContent  = msg || 'تعذر تشغيل الفيديو.';
+}
+
+/* تشغيل من البلاي ليست */
+function playFromPlaylist(index){
+  if(!playlist.length){
+    fail('لا يوجد أي رابط تشغيل متاح.');
+    return;
+  }
+  if(index >= playlist.length){
+    fail('كل مصادر الفيديو فشلت في التشغيل.');
+    return;
+  }
+  currentIndex = index;
+  const url = playlist[index];
+
+  loaderEl.style.display = 'flex';
+  errorBox.style.display = 'none';
+
+  player.src = url;
+  player.load();
+  player.play()
+    .then(()=>{
+      loaderEl.style.display = 'none';
+      showUI();
+    })
+    .catch(err=>{
+      console.warn('Play error for url', url, err);
+      // جرّب اللينك اللي بعده
+      playFromPlaylist(index+1);
+    });
+
+  player.onerror = () => {
+    console.warn('HTML5 video error on', url);
+    playFromPlaylist(index+1);
+  };
+}
+
+/* تحميل البلاي ليست من الباك إند (لو حابب تستخدمه) */
+async function loadPlaylistFromBackend(id, type){
+  // عدّل العنوان دا حسب الباك إند بتاعك:
+  const BACKEND_BASE = 'https://iptv-backend-production-34ee.up.railway.app';
+  const url = `${BACKEND_BASE}/playlist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`;
+
+  const res = await fetch(url, {cache:'no-store'});
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+
+  if(!data || data.status !== 'ok' || !Array.isArray(data.playlist) || !data.playlist.length){
+    throw new Error('رد غير صالح من خادم البث');
+  }
+
+  titleEl.textContent = data.title || titleParam;
+  return data.playlist;
+}
+
+/* البداية */
+(async function init(){
+  try{
+    if(directUrlParam){
+      // وضع بسيط: التطبيق يبعث لينك الفيديو مباشرة
+      const realUrl = decodeURIComponent(directUrlParam);
+      playlist = [realUrl];
+      playFromPlaylist(0);
+    } else if(idParam){
+      // وضع الباك إند: التطبيق يبعت id + type
+      playlist = await loadPlaylistFromBackend(idParam, typeParam);
+      playFromPlaylist(0);
+    } else {
+      fail('لا يوجد رابط تشغيل (url) أو معرف (id) في الرابط.');
+    }
+  }catch(err){
+    console.error(err);
+    fail('تعذر تحميل بيانات الفيديو من الخادم.');
+  }
+})();
+</script>
+</body>
+</html>
