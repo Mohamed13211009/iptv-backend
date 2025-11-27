@@ -1,0 +1,4 @@
+name = "iptv-proxy"
+main = "src/index.js"
+compatibility_date = "2023-11-27"
+workers_dev = true
