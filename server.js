@@ -1,41 +1,13 @@
-const express = require("express");
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// خلي المفتاح في Environment Variable على Railway
-const PROXYCHECK_API_KEY = process.env.PROXYCHECK_API_KEY;
-const MAX_RISK = 75;
-
-// مسموح ندي API لأي دومين (عشان AppCreator24 يطلبه)
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-// دالة للحصول على الـ IP الحقيقي قدر الإمكان
-function getClientIp(req) {
-  const xfwd = req.headers["x-forwarded-for"];
-  if (xfwd) {
-    return xfwd.split(",")[0].trim();
-  }
-  return req.socket.remoteAddress || "0.0.0.0";
-}
-
 app.get("/check", async (req, res) => {
   if (!PROXYCHECK_API_KEY) {
     return res.status(500).json({
-      allow: false,
+      allow: true,              // اسمح لو مفيش API KEY، ما تقفلش على الناس
       reason: "no_api_key_configured",
     });
   }
 
   const ip = getClientIp(req);
+  console.log("Client IP:", ip);
 
   try {
     const url =
@@ -45,49 +17,46 @@ app.get("/check", async (req, res) => {
       encodeURIComponent(PROXYCHECK_API_KEY) +
       "&vpn=1&asn=1&risk=1&days=7&tag=LegendTV";
 
-    // fetch موجود في Node 18+
     const response = await fetch(url);
     const data = await response.json();
 
-    let allow = false;
-    let reason = "unknown";
+    console.log("Proxycheck raw response:", data);
 
-    if (data && data[ip]) {
-      const info = data[ip];
+    // في بعض الأحيان الـ IP بيبقى مكتوب ::ffff:1.2.3.4 أو شبيه
+    // فنجيب أول مفتاح غير status ونستخدمه
+    let ipKey = Object.keys(data).find((k) => k !== "status");
+    let info = ipKey ? data[ipKey] : null;
+
+    let allow = true;
+    let reason = "clean";
+
+    if (info) {
       const isProxy = info.proxy === "yes";
-      const isVpn =
-        info.type && typeof info.type === "string"
-          ? info.type.toLowerCase() === "vpn"
-          : false;
-      const risk = info.risk ? parseInt(info.risk) : 0;
+      const type = (info.type || "").toLowerCase();
+      const isVpnType =
+        type === "vpn" || type === "tor" || type === "webproxy";
 
-      if (isProxy || isVpn || risk >= MAX_RISK) {
+      // هنا بس بنقفل لو فعلاً Proxy/VPN
+      if (isProxy || isVpnType) {
         allow = false;
-        reason = "vpn_or_proxy_or_high_risk";
-      } else {
-        allow = true;
-        reason = "clean";
+        reason = "vpn_or_proxy";
       }
+      // لو حابب تستخدم الـ risk بعدين، ممكن تضيف شرط تاني هنا
+      // const risk = info.risk ? parseInt(info.risk) : 0;
     } else {
-      allow = false;
+      // لو مش راجع داتا عن الـ IP، نسمح كافتراضي
+      allow = true;
       reason = "no_ip_data";
     }
 
-    res.json({ allow, reason, ip });
+    return res.json({ allow, reason, ip: ipKey || ip });
   } catch (err) {
     console.error("proxycheck error:", err);
-    // تقدر تخليها تسمح أو تمنع في حالة الخطأ، هنا خالّيها تمنع
-    res.status(500).json({
-      allow: false,
-      reason: "proxycheck_error",
+
+    // مهم: ما نقفلش لو حصل خطأ في Proxycheck، نخليه يسمح
+    return res.status(200).json({
+      allow: true,
+      reason: "proxycheck_error_but_allowed",
     });
   }
-});
-
-app.get("/", (req, res) => {
-  res.send("ProxyCheck backend is running ✅");
-});
-
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
 });
