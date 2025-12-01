@@ -6,19 +6,22 @@ const axios = require("axios");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ====== إعدادات ======
+
+// البلد المسموح بيه (لو انت من دولة تانية غيّرها)
+const ALLOWED_COUNTRY = "Egypt";
+
 // ====== MIDDLEWARE ======
 
-// السماح للفرونت إند يطلب من أي دومين (CORS)
 app.use(
   cors({
-    origin: "*", // تقدر تقفلها بعدين وتسيب دومين واحد بس
+    origin: "*", // عادي دلوقتي مفتوح، لو عايز تقفله بعدين عدّلها
   })
 );
 
-// عشان نقدر نقرا JSON لو حبيت تستخدم POST بعدين
 app.use(express.json());
 
-// ====== HELPER: جلب IP الحقيقي من الهيدر أو من req.ip ======
+// ====== HELPER: جلب IP ======
 function getClientIp(req) {
   const fwd = req.headers["x-forwarded-for"];
   if (fwd) {
@@ -32,8 +35,12 @@ function getClientIp(req) {
   return ip;
 }
 
-// ====== HELPER: كشف VPN بشكل تقريبي من ISP/ORG ======
-function isVpnOrHosting(isp = "", org = "") {
+// ====== HELPER: تحليل بيانات الـ IP ======
+function analyzeIp(data) {
+  const isp = data.isp || "";
+  const org = data.org || "";
+  const country = data.country || null;
+
   const text = (isp + " " + org).toLowerCase();
 
   const suspiciousKeywords = [
@@ -55,14 +62,28 @@ function isVpnOrHosting(isp = "", org = "") {
     "azure",
     "linode",
     "contabo",
-    "vultr"
+    "vultr",
+    "warp",
+    "m247",
+    "nordvpn",
+    "surfshark",
+    "private internet access",
+    "pia"
   ];
 
-  const matched = suspiciousKeywords.filter((k) => text.includes(k));
-  return {
-    suspected: matched.length > 0,
-    matchedKeywords: matched,
-  };
+  const matchedKeywords = suspiciousKeywords.filter((k) =>
+    text.includes(k)
+  );
+
+  let suspected = matchedKeywords.length > 0;
+
+  // قاعدة البلد: لو البلد مش مصر نعتبره VPN / اتصال ممنوع
+  if (country && country !== ALLOWED_COUNTRY) {
+    suspected = true;
+    matchedKeywords.push("country_mismatch");
+  }
+
+  return { suspected, matchedKeywords, isp, org, country };
 }
 
 // ====== HEALTH CHECK ======
@@ -91,9 +112,7 @@ app.get("/check-ip", async (req, res) => {
 
     const url = `http://ip-api.com/json/${ip}?fields=status,message,country,city,isp,org,query`;
 
-    const { data } = await axios.get(url, {
-      timeout: 5000,
-    });
+    const { data } = await axios.get(url, { timeout: 5000 });
 
     if (data.status !== "success") {
       return res.status(400).json({
@@ -103,19 +122,18 @@ app.get("/check-ip", async (req, res) => {
       });
     }
 
-    const isp = data.isp || "";
-    const org = data.org || "";
-    const { suspected, matchedKeywords } = isVpnOrHosting(isp, org);
+    const analysis = analyzeIp(data);
 
+    // ترجيع النتيجة للفرونت إند
     return res.json({
       success: true,
       ip: data.query || ip,
-      country: data.country || null,
+      country: analysis.country,
       city: data.city || null,
-      isp,
-      org,
-      suspected_vpn: suspected,
-      matched_keywords: matchedKeywords,
+      isp: analysis.isp,
+      org: analysis.org,
+      suspected_vpn: analysis.suspected,
+      matched_keywords: analysis.matchedKeywords,
     });
   } catch (err) {
     console.error("Error in /check-ip:", err.message);
