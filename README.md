@@ -1,6 +1,7 @@
-# Simple VPN Detector API
+# Simple VPN / IPTV Backend
 
-## Usage:
-`/check-ip?ip=8.8.8.8`
+## Run locally
 
-Returns whether the IP is suspected as VPN based on ISP/ORG keywords.
+```bash
+npm install
+npm start
