@@ -587,69 +587,35 @@ let searchAll = { movies:[], series:[], live:[] };
 function cacheKey(id){ return 'iptv_cache_' + id; }
 const RECENT_KEY = 'iptv_recent_items';
 
-function getStore(){
-  try{
-    if(window.sessionStorage) return window.sessionStorage;
-  }catch(e){}
-  try{
-    if(window.localStorage) return window.localStorage;
-  }catch(e){}
-  return null;
-}
-
-let sessionFlags = { disableNetwork:false };
-(function initSessionFlags(){
-  try{
-    if(window.sessionStorage){
-      const ss = window.sessionStorage;
-      if(ss.getItem('iptv_session_started') === '1'){
-        sessionFlags.disableNetwork = true;
-      }else{
-        ss.setItem('iptv_session_started','1');
-        sessionFlags.disableNetwork = false;
-      }
-    }
-  }catch(e){}
-})();
-
-
 function saveCache(id,data){
-  const store = getStore();
-  if(!store) return;
-  try{
-    store.setItem(cacheKey(id), JSON.stringify({ts:Date.now(),data}));
-  }catch(e){}
+try{
+localStorage.setItem(cacheKey(id), JSON.stringify({ts:Date.now(),data}));
+}catch(e){}
 }
 function loadCache(id){
-  const store = getStore();
-  if(!store) return null;
-  try{
-    const raw = store.getItem(cacheKey(id));
-    if(!raw) return null;
-    const o = JSON.parse(raw);
-    if(!o || !o.data) return null;
-    const age = Date.now() - (o.ts || 0);
-    if(age > 1000*60*60*24*3) return null;
-    return o.data;
-  }catch(e){return null}
+try{
+const raw = localStorage.getItem(cacheKey(id));
+if(!raw) return null;
+const o=JSON.parse(raw);
+if(!o || !o.data) return null;
+const age = Date.now() - (o.ts || 0);
+if(age > 1000*60*60*24*3) return null;
+return o.data;
+}catch(e){return null}
 }
 
 function loadRecent(){
-  const store = getStore();
-  if(!store) return [];
-  try{
-    const raw = store.getItem(RECENT_KEY);
-    if(!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  }catch(e){return []}
+try{
+const raw = localStorage.getItem(RECENT_KEY);
+if(!raw) return [];
+const arr = JSON.parse(raw);
+return Array.isArray(arr) ? arr : [];
+}catch(e){return []}
 }
 function saveRecent(){
-  const store = getStore();
-  if(!store) return;
-  try{
-    store.setItem(RECENT_KEY, JSON.stringify(recentList));
-  }catch(e){}
+try{
+localStorage.setItem(RECENT_KEY, JSON.stringify(recentList));
+}catch(e){}
 }
 function addToRecent(item){
 const id =
@@ -754,20 +720,14 @@ return list.slice(0,20);
 }
 
 
-function restoreHomeScroll(){
-try{
-const store = getStore();
-if(!store) return;
-const v = store.getItem('home_scroll');
-if(!v) return;
-const y = parseInt(v,10);
-if(isNaN(y)) return;
-setTimeout(()=>{ window.scrollTo(0,y); },0);
-}catch(e){}
-}
-
 async function loadAllSections(){
 const container = document.getElementById('sectionsContainer');
+container.innerHTML = `
+<div class="loader-wrap">
+<div class="loader"></div>
+<div class="loader-title">MY TV</div>
+</div>
+`;
 
 cache.movies  = loadCache('movies')  || [];
 cache.vodCats = loadCache('vodCats') || [];
@@ -776,27 +736,13 @@ recentList    = loadRecent();
 const hadCache = cache.movies.length && cache.vodCats.length;
 
 if(hadCache){
-container.innerHTML = '';
 renderCurrentView();
-restoreHomeScroll();
-}else{
-container.innerHTML = `
-<div class="loader-wrap">
-<div class="loader"></div>
-<div class="loader-title">MY TV</div>
-</div>
-`;
 }
 
 if(!sessionUser){
 if(!hadCache){
 container.innerHTML = '<div class="muted" style="padding:40px 0;text-align:center;">لم يتم إعداد بيانات الدخول</div>';
 }
-return;
-}
-
-// لا نعيد التحميل من السيرفر إذا كان لدينا كاش وجلسة التطبيق مستمرة
-if(sessionFlags.disableNetwork && hadCache){
 return;
 }
 
@@ -815,7 +761,6 @@ saveCache('movies',  cache.movies);
 saveCache('vodCats', cache.vodCats);
 
 renderCurrentView();
-restoreHomeScroll();
 }catch(e){
 console.warn('فشل تحميل بيانات الأفلام من السيرفر', e);
 if(!hadCache){
@@ -875,42 +820,22 @@ return it;
 }
 
 
-function normalizeCategoryName(name){
-const raw = (name || '').toString();
-let s = raw.replace(/[0-9٠-٩]+/g,' ');
-s = s.replace(/[-–—ـ_,،]+/g,' ');
-s = s.replace(/\s{2,}/g,' ').trim();
-return s || raw || 'تصنيف';
-}
-
 function buildCategoriesForMovies(){
 const items = cache.movies || [];
 const cats  = cache.vodCats || [];
-const groups = {};
+const result = [];
 
 cats.forEach(cat=>{
-const rawName = cat.category_name || cat.category_name_ar || cat.name || 'تصنيف';
-const normName = normalizeCategoryName(rawName);
-const cid = String(cat.category_id || cat.category || cat.id || '').trim();
-if(!cid) return;
-if(!groups[normName]){
-groups[normName] = { id: cid, name: normName, items: [] };
+const id = String(cat.category_id || cat.category || cat.id || '');
+if(!id) return;
+const name = cat.category_name || cat.category_name_ar || cat.name || 'تصنيف';
+const catItems = items.filter(it => String(it.category_id||it.category||'') === id);
+if(catItems.length){
+result.push({id, name, items:catItems});
 }
 });
 
-items.forEach(it=>{
-const cid = String(it.category_id || it.category || '').trim();
-if(!cid) return;
-for(const key in groups){
-const g = groups[key];
-if(g.id === cid){
-g.items.push(it);
-return;
-}
-}
-});
-
-return Object.values(groups).filter(g => g.items && g.items.length);
+return result;
 }
 
 
@@ -1049,80 +974,6 @@ container.appendChild(sec);
 const row = sec.querySelector('#'+CSS.escape(rowId));
 renderRowElement(row, cat.items);
 });
-
-function renderMoreGrid(list){
-const grid = document.getElementById('moreGrid');
-if(!grid) return;
-grid.innerHTML = '';
-if(!list || !list.length){
-const empty = document.createElement('div');
-empty.className = 'morePage-empty';
-empty.textContent = 'لا توجد عناصر مطابقة';
-grid.appendChild(empty);
-return;
-}
-list.forEach(it=>{
-const card = document.createElement('div');
-card.className = 'morePage-card';
-
-const thumb = document.createElement('div');
-thumb.className = 'morePage-thumb';
-
-const img = document.createElement('img');
-img.loading = 'lazy';
-img.src = it.stream_icon || it.icon || it.tv_series_thumb || it.cover || it.poster || 'https://via.placeholder.com/320x180?text=No+Image';
-img.onerror = ()=>{ img.src = 'https://via.placeholder.com/320x180?text=No+Image'; };
-
-thumb.appendChild(img);
-card.appendChild(thumb);
-
-card.addEventListener('click', ()=>{
-const t = guessSectionType(it);
-if(t === 'series'){
-openSeries(it);
-}else{
-openPlayerOrFallback(it, false);
-}
-});
-
-grid.appendChild(card);
-});
-}
-
-function openMorePage(title, items){
-const page = document.getElementById('morePage');
-const titleEl = document.getElementById('moreTitle');
-const searchInput = document.getElementById('moreSearchInput');
-if(!page || !titleEl) return;
-
-currentMoreItems = Array.isArray(items) ? items.slice() : [];
-titleEl.textContent = title || 'القائمة';
-
-page.style.display = 'block';
-
-renderMoreGrid(currentMoreItems);
-
-if(searchInput){
-searchInput.value = '';
-searchInput.oninput = ()=>{
-const q = searchInput.value.trim().toLowerCase();
-if(!q){
-renderMoreGrid(currentMoreItems);
-return;
-}
-const filtered = currentMoreItems.filter(it=>{
-const name = (it.name || it.title || '').toString().toLowerCase();
-return name.includes(q);
-});
-renderMoreGrid(filtered);
-};
-}
-}
-
-function closeMorePage(){
-const page = document.getElementById('morePage');
-if(page) page.style.display = 'none';
-}
 }
 
 
@@ -1742,20 +1593,9 @@ if(!more) return;
 if(more.id === 'clearRecentBtn') return;
 
 const go = more.dataset.go;
-if(!go) return;
-
-// حفظ موضع التمرير قبل الانتقال لصفحة عرض المزيد (داخل جلسة التطبيق)
-try{
-const store = getStore();
-if(store){
-  const y = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
-  store.setItem('home_scroll', String(y));
+if(go){
+window.location.href = go;
 }
-}catch(e){}
-
-// الانتقال إلى all.html وتمرير go في الاستعلام
-const url = 'all.html?go=' + encodeURIComponent(go);
-window.location.href = url;
 });
 
 
