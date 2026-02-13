@@ -1,5 +1,7 @@
 {
-  "base_url": "http://iptv.1stv.xyz:88",
-  "username": "1stMovies",
-  "password": "YGiolMBFMShLn"
+  "servers": [
+    { "base_url": "http://server1.com", "username": "u1", "password": "p1" },
+    { "base_url": "http://server2.com", "username": "u2", "password": "p2" },
+    { "base_url": "http://server3.com", "username": "u3", "password": "p3" }
+  ]
 }
