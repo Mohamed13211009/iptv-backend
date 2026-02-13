@@ -1,6 +1,6 @@
 {
   "servers": [
-    { "base_url": "http://iptv.1stv.xyz:88", "username": "1stMovies", "password": "YGiolMBFMShLn" },
+    { "base_url": "http://iptv.1stv.xyz:88", "username": "1stMovies", "password": "YGiolMBFMhLn" },
     { "base_url": "http://dlta4k.world", "username": "YGiolMBFMShLn", "password": "FVcry6y98c" },
     { "base_url": "http://server3.com", "username": "user3", "password": "pass3" }
   ]
