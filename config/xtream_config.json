@@ -1,6 +1,6 @@
 {
   "servers": [
-    { "base_url": "http://ibo.lynxiptv.com", "username": "760495572073", "password": "4ZWyUoO4zA" },
+    { "base_url": "http://ibo.lynxiptv.com", "username": "760495572073", "password": "4ZWyUo" },
     { "base_url": "http://iptv.1stv.xyz:88", "username": "1stMovies", "password": "nlLbQ2zUEIIBr" }
   ]
 }
