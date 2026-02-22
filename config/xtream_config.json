@@ -1,7 +1,8 @@
 {
   "servers": [
+ { "base_url": "http://cafott.com", "username": "373574193", "password": "453567162" },
     { "base_url": "http://iptv.1stv.xyz:88", "username": "1stMovies", "password": "WFlJYs6iTwGil" },
-     { "base_url": "5555", "username": "1stMovies", "password": "jcj7t1pzfd6r" },
+     { "base_url": "http://cafott.com", "username": "373574193", "password": "453567162" },
     { "base_url": "http://ibo.lynxiptv.com", "username": "232978944953", "password": "jcj7t1pzfd6r" },
     { "base_url": "http://showplustv.info", "username": "Salem23", "password": "Ward4915753693571" },
 
